@@ -174,6 +174,12 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var texture: MTLTexture?
         var serial = -1
         var aspect = 16.0 / 9.0
+        /// Mipmaps only help when the screen is shrunk well below 1:1; otherwise the captured frame
+        /// is drawn straight from ScreenCaptureKit's buffer (zero copy).
+        var wantsMips = true
+        var hasMips = false
+        var source: (CVMetalTexture, CVPixelBuffer)? // keeps a zero-copy frame alive while drawn
+        var copies = 0, zeroCopies = 0, partialCopies = 0
         init(_ capture: Capture, side: Int) { self.capture = capture; self.side = side }
     }
     private var panels: [Panel]
@@ -867,6 +873,11 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             }
         }
         airPodsCalibrating = calibrating
+        // A sound per finished step of the guided calibration: nobody reads while turning their head.
+        if calibration.phase != lastPhase {
+            if calibrating, calibration.phase == .nod || calibration.phase == .finishing { DispatchQueue.main.async { NSSound(named: "Pop")?.play() } }
+            lastPhase = calibration.phase
+        }
         if calibrating {
             let filled = Int((calibration.progress * 20).rounded())
             let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
@@ -1040,6 +1051,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     // MARK: Telemetry
 
     private var lastTelemetry = 0.0
+    private var lastPhase = AirPodsCalibration.Phase.turn
+    private var tLastBud = (switches: 0, gaps: 0, phase: AirPodsCalibration.Phase.turn)
     private var tFrames = 0, tDrawn = 0, tWindow = 0.0, tFPS = 0.0, tDrawnFPS = 0.0
     private var tLast = (ready: false, reseats: 0, restarts: 0, ignored: false, tracking: TrackingMode.both, connected: false, asleep: false, jumps: 0)
 
@@ -1064,6 +1077,10 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             t.event(calibration.ready ? String(format: "airpods calibrated (lag %.0f ms, fit %.1f%%)", calibration.lag * 1000, calibration.fitError * 100)
                     : "airpods calibration lost", time: now)
         }
+        if calibration.budSwitches != tLastBud.switches { t.event("airpods: other earbud took over", time: now) }
+        if calibration.gaps != tLastBud.gaps { t.event("airpods: data gap, re-referenced", time: now) }
+        if calibration.phase != tLastBud.phase { t.event("airpods calibration step: \(calibration.phase.rawValue)", time: now) }
+        tLastBud = (calibration.budSwitches, calibration.gaps, calibration.phase)
         if calibration.reseats != tLast.reseats { t.event("airpods reseated in the ears: relearning", time: now) }
         if calibration.restarts != tLast.restarts { t.event("airpods calibration: poor fit, dropped older movement", time: now) }
         if calibration.jumps != tLast.jumps { t.event("airpods reference jumped (Spatial Audio re-center, bud swap): re-referenced", time: now) }
@@ -1335,8 +1352,9 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         let displayInfo = developerDisplayInfo
         lock.unlock()
         lines.append("DISPLAY       " + displayInfo)
-        lines.append(String(format: "  capture     %.0f fps (only when the screen changes)   buffer %.0f×%.0f   screens %d", devCaptureFPS,
-                            devCaptureSize.width, devCaptureSize.height, panels.count))
+        lines.append(String(format: "  capture     %.0f fps (only when the screen changes)   buffer %.0f×%.0f   screens %d   zero-copy %d · partial %d · full %d",
+                            devCaptureFPS, devCaptureSize.width, devCaptureSize.height, panels.count,
+                            panels[0].zeroCopies, panels[0].partialCopies, panels[0].copies))
         let text = lines.joined(separator: "\n")
         devShown = true
         DispatchQueue.main.async {
@@ -1375,10 +1393,14 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
 
     // MARK: Drawing
 
-    /// New capture frame -> mipmapped texture (only when it changed).
+    /// New capture frame -> texture, only when it changed. Zero copy when mipmaps aren't needed;
+    /// otherwise only the changed areas are copied into the mipmapped texture.
     private func upload(_ panel: Panel, _ cb: MTLCommandBuffer) {
-        guard let (pb, serial) = panel.capture.latestFrame(), serial != panel.serial, let cache = textureCache else { return }
-        panel.serial = serial
+        let switching = panel.wantsMips != panel.hasMips
+        guard let cache = textureCache, panel.capture.latestSerial() != panel.serial || switching,
+              let frame = panel.capture.takeFrame() else { return }
+        panel.serial = frame.serial
+        let pb = frame.buffer
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb)
         if panel.side == 0 {
             devCaptureFrames += 1
@@ -1386,20 +1408,42 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         }
         var cvTex: CVMetalTexture?
         CVMetalTextureCacheCreateTextureFromImage(nil, cache, pb, nil, pixelFormat, w, h, 0, &cvTex)
-        guard let cvTex, let src = CVMetalTextureGetTexture(cvTex), let blit = cb.makeBlitCommandEncoder() else { return }
-        if panel.texture?.width != w || panel.texture?.height != h {
+        guard let cvTex, let src = CVMetalTextureGetTexture(cvTex) else { return }
+        panel.aspect = Double(w) / Double(h)
+
+        // A frame still being drawn by the GPU must not go back to ScreenCaptureKit for reuse yet.
+        if let old = panel.source { cb.addCompletedHandler { _ in _ = old } }
+        guard panel.wantsMips else {
+            panel.texture = src
+            panel.source = (cvTex, pb)
+            panel.hasMips = false
+            panel.zeroCopies += 1
+            return
+        }
+        var region = MTLRegionMake2D(0, 0, w, h)
+        if panel.texture?.width != w || panel.texture?.height != h || !panel.hasMips {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: w, height: h, mipmapped: true)
             d.usage = [.shaderRead]
             d.storageMode = .private
             panel.texture = device.makeTexture(descriptor: d)
+            panel.copies += 1
+        } else if let dirty = frame.dirty {
+            let r = dirty.intersection(CGRect(x: 0, y: 0, width: w, height: h))
+            if r.isEmpty { return } // nothing changed after all
+            region = MTLRegionMake2D(Int(r.minX), Int(r.minY), Int(r.width.rounded(.up)), Int(r.height.rounded(.up)))
+            region.size.width = min(region.size.width, w - region.origin.x)
+            region.size.height = min(region.size.height, h - region.origin.y)
+            panel.partialCopies += 1
+        } else {
+            panel.copies += 1
         }
-        guard let dst = panel.texture else { blit.endEncoding(); return }
-        blit.copy(from: src, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(),
-                  sourceSize: MTLSize(width: w, height: h, depth: 1),
-                  to: dst, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin())
+        guard let dst = panel.texture, let blit = cb.makeBlitCommandEncoder() else { return }
+        blit.copy(from: src, sourceSlice: 0, sourceLevel: 0, sourceOrigin: region.origin, sourceSize: region.size,
+                  to: dst, destinationSlice: 0, destinationLevel: 0, destinationOrigin: region.origin)
         blit.generateMipmaps(for: dst)
         blit.endEncoding()
-        panel.aspect = Double(w) / Double(h)
+        panel.hasMips = true
+        panel.source = nil
         cb.addCompletedHandler { _ in _ = (cvTex, pb) } // keep the source alive until the GPU is done
     }
 
@@ -1444,6 +1488,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                                            rect: SIMD4(0, 0, 1, 1), lockBlend: Float(locked), columns: columns)
                 let texelsPerPixel = Double(tex.width) / (g.width / (2 * g.halfW) * eyeW)
                 if panel.side == 0 { devTexelsPerPixel = texelsPerPixel }
+                // Bicubic covers up to 1.6 texels per pixel, plain bilinear about 1; beyond, mipmaps.
+                panel.wantsMips = texelsPerPixel > (p.smartFilter ? 1.6 : 1.05)
                 let panelExact = panel.side == 0 && exact
                 var look = Look(sharpness: panelExact ? 0 : Float(p.sharpness * (p.motionSharpen ? 1 - f.motion : 1)),
                                 texelsPerPixel: Float(texelsPerPixel), sharpen: p.sharpenStyle == .rcas ? 0 : 1,

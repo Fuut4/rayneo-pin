@@ -155,19 +155,20 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             List(SettingsPage.allCases, selection: $page) { p in
-                Label {
-                    Text(p.title)
-                } icon: {
+                // Icon tile and title with System Settings' spacing (a Label packs them too tight).
+                HStack(spacing: 10) {
                     Image(systemName: p.icon.name)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(width: 24, height: 24)
                         .background(p.icon.color.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    Text(p.title)
                 }
-                .padding(.vertical, 3)
+                .padding(.vertical, 4)
+                .padding(.leading, 2)
                 .tag(p)
             }
-            .navigationSplitViewColumnWidth(200)
+            .navigationSplitViewColumnWidth(215)
         } detail: {
             Group {
                 switch page ?? .general {
