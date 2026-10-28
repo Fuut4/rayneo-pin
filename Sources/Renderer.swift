@@ -321,7 +321,11 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         r += tex.sample(s, float2(t0.x, t3.y), level(0)) * w0.x * w3.y;
         r += tex.sample(s, float2(t12.x, t3.y), level(0)) * w12.x * w3.y;
         r += tex.sample(s, float2(t3.x, t3.y), level(0)) * w3.x * w3.y;
-        return clamp(r, 0.0, 1.0);
+        // Anti-ringing: Catmull-Rom overshoots at sharp edges, which draws a bright/dark halo
+        // around text. Keep the result within the 4 texels it sits between.
+        float4 a = tex.sample(s, p1 / size, level(0)), b = tex.sample(s, (p1 + float2(1, 0)) / size, level(0));
+        float4 c = tex.sample(s, (p1 + float2(0, 1)) / size, level(0)), d = tex.sample(s, (p1 + 1.0) / size, level(0));
+        return clamp(r, min(min(a, b), min(c, d)), max(max(a, b), max(c, d)));
     }
 
     float4 base(texture2d<float> tex, sampler s, float2 uv, float2 dx, float2 dy, constant Look &lk) {
