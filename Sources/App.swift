@@ -68,7 +68,7 @@ final class Settings {
 
     /// Multiple-choice options, stored as strings.
     static let choiceDefaults: [String: String] = [
-        "sharpenStyle": SharpenStyle.rcas.rawValue, "smoothing": SmoothingMode.oneEuro.rawValue,
+        "sharpenStyle": SharpenStyle.unsharp.rawValue, // best in the render lab "smoothing": SmoothingMode.oneEuro.rawValue,
         "pacing": FramePacing.metalLink.rawValue, "fusion": Fusion.Mode.complementary.rawValue,
         "warmth": "0", "brightness": "1", "yawGain": "1", "followDeadzone": "20", "predictionTrim": "0",
         "sideScreens": "off",
@@ -111,7 +111,7 @@ final class Settings {
         p.tracking = tracking
         p.developer = developer
         p.sharpness = sharpness
-        p.sharpenStyle = SharpenStyle(rawValue: choice("sharpenStyle")) ?? .rcas
+        p.sharpenStyle = SharpenStyle(rawValue: choice("sharpenStyle")) ?? .unsharp
         p.motionSharpen = flag("motionSharpen")
         p.smartFilter = flag("smartFilter")
         p.pixelLock = flag("pixelLock")

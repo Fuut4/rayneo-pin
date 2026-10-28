@@ -26,6 +26,19 @@ Your settings carry over both ways. Everything new lives in four new menus: **Re
 | ⌃⌥G | Start / finish the full-turn sensitivity calibration |
 | Double tap on the glasses | Recenter |
 
+## Text clarity: render lab results
+
+`RayNeoPin --render-lab [folder]` renders real macOS text through the glasses pipeline offscreen, for every combination of the readability options. It scores each result against the same text drawn natively at the size it appears in the glasses (0 = identical). CI runs it on every push and publishes the scores and zoomed crops to the `lab-results` branch.
+
+| Setup | Error vs native |
+|---|---|
+| Before (linear light, bilinear, sharpness 0.5), Glasses Screen | 0.98 (dark-mode text +22% glow, light-mode text −17% thin) |
+| **Now: gamma + bicubic + unsharp 0.5**, Glasses Screen | **0.08** dark / **0.15** light |
+| Crisp Retina (Virtual Display, text drawn at 2×) | 0.10 / 0.17 |
+| Crisp + Pixel Lock, holding still | 0.04 / 0.08 |
+
+The halo came from resizing in linear light. Font renderers, macOS included, blend text in gamma space. **Readability › Resize Text Like macOS** fixes it, and is on by default.
+
 ## What's in it
 
 On = enabled by default on this branch.

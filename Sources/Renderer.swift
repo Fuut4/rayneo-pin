@@ -41,8 +41,8 @@ enum SharpenStyle: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .rcas: return "Adaptive (AMD RCAS, no halos)"
-        case .unsharp: return "Unsharp Mask (halo-clamped)"
+        case .rcas: return "Adaptive (AMD RCAS)"
+        case .unsharp: return "Unsharp Mask, halo-clamped (best in tests)"
         }
     }
 }
@@ -113,7 +113,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var paused = false
         var developer = false
         // Readability
-        var sharpenStyle = SharpenStyle.rcas
+        var sharpenStyle = SharpenStyle.unsharp
         var motionSharpen = true // full sharpening when still, none while turning (no crawling)
         var smartFilter = true // Catmull-Rom near 1:1 and when magnified, RGSS when shrunk further
         var pixelLock = true // still + ~1:1 scale: draw exactly on the pixel grid
