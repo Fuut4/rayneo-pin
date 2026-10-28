@@ -84,6 +84,7 @@ final class Renderer: NSObject {
     private var heading = HeadingReference()
     private var calibration = AirPodsCalibration()
     private var airPodsNote = "" // why AirPods aren't used right now, for the HUD
+    private var airPodsCalibrating = false // for start/finish sounds
     private var devAirPodsDelay = 0.0
     private var devYawGap: Double?
     private var hasPose = false
@@ -372,10 +373,25 @@ final class Renderer: NSObject {
             }
             if let airpods { devAirPodsDelay = CACurrentMediaTime() - airpods.time }
         }
-        airPodsNote = p.tracking == .glasses ? ""
-            : airpods == nil ? "AirPods: no data — using glasses"
-            : !calibration.ready ? "AirPods: calibrating — turn your head left/right and nod (using glasses meanwhile)"
-            : ""
+        let calibrating = p.tracking != .glasses && airpods != nil && !calibration.ready
+        if calibrating != airPodsCalibrating {
+            airPodsCalibrating = calibrating
+            // Audible start/finish: nobody can read a progress bar while turning their head.
+            let done = !calibrating && calibration.ready
+            if calibrating || done {
+                DispatchQueue.main.async { NSSound(named: calibrating ? "Tink" : "Glass")?.play() }
+                if done { show("AirPods calibrated", seconds: 2) }
+            }
+        }
+        if calibrating {
+            let filled = Int((calibration.progress * 20).rounded())
+            let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
+            let hint = CACurrentMediaTime() - calibration.lastPairTime > 1.5
+                ? "turn your head left/right and nod — a bit faster" : "keep turning and nodding"
+            airPodsNote = "Calibrating AirPods  \(bar)  \(Int(calibration.progress * 100))%  — \(hint)"
+        } else {
+            airPodsNote = p.tracking == .glasses || airpods != nil ? "" : "AirPods: no data — using glasses"
+        }
 
         var pose: simd_quatd?
         var omega = SIMD3<Double>.zero

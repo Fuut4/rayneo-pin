@@ -213,7 +213,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         source = .display(monitor.displayID)
         applyResolution()
         // WindowServer needs a moment before the new display can be positioned.
+        // WindowServer needs a moment before the new display's modes and position can be set.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.applyResolution()
             Displays.arrange(above: monitor.displayID, right: Displays.glasses().map(Displays.id))
             self?.screensChanged()
         }
@@ -258,8 +260,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let monitor else { return }
         let glassesWidth = Double(Displays.glasses()?.frame.width ?? 1920)
         let covered = glassesWidth * Renderer.baseWidth * settings.zoom
-        let mode = VirtualMonitor.logicalWidth(for: settings.resolution, coveredPixels: covered)
-        monitor.setMode(width: mode.width, hiDPI: mode.hiDPI)
+        guard let mode = settings.resolution.mode(coveredPixels: covered) else { return } // manual: macOS decides
+        monitor.setMode(width: mode.w, height: mode.h, hiDPI: mode.hiDPI)
     }
 
     /// Zooming in steps would otherwise switch resolution on every key press.
@@ -455,12 +457,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         resolutionMenu.removeAllItems()
-        if settings.sourceKind != "virtual" { resolutionMenu.addItem(header("Only for the Virtual Display setup")) }
+        if settings.sourceKind != "virtual" { resolutionMenu.addItem(header("Picking one switches to the Virtual Display setup")) }
         for r in VirtualMonitor.Resolution.allCases {
+            if r == .wuxga || r == .uw2560 || r == .manual { resolutionMenu.addItem(.separator()) }
             let i = item(r.rawValue, #selector(pickResolution(_:)))
             i.representedObject = "\(r)"
             i.state = settings.resolution == r ? .on : .off
-            i.isEnabled = settings.sourceKind == "virtual"
             resolutionMenu.addItem(i)
         }
         sharpnessMenu.removeAllItems()
@@ -497,7 +499,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sourceMenu.removeAllItems()
         for (kind, title) in [("glasses", "Glasses Screen — one display (recommended)"),
                               ("ultrawide", "Glasses Screen Ultrawide 32:9 — one display, 3D mode, 60 Hz"),
-                              ("virtual", "Virtual Display — second display, any resolution")] {
+                              ("virtual", "Virtual Display — any resolution incl. ultrawide, 120 Hz (adds a display)")] {
             let i = item(title, #selector(pickSource(_:)))
             i.representedObject = [kind, UInt32(0)]
             i.state = settings.sourceKind == kind ? .on : .off
@@ -547,7 +549,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let raw = sender.representedObject as? String,
               let r = VirtualMonitor.Resolution.allCases.first(where: { "\($0)" == raw }) else { return }
         settings.resolution = r
-        applyResolution()
+        if settings.sourceKind != "virtual" {
+            settings.sourceKind = "virtual" // these sizes only exist on the virtual display
+            applySetup()
+        } else {
+            applyResolution()
+        }
+        renderer?.show(r == .manual ? "Resolution: pick it in System Settings › Displays › RayNeoPin Display" : "Resolution: \(r.rawValue)", seconds: 3)
     }
 
     @objc func pickSharpness(_ sender: NSMenuItem) {

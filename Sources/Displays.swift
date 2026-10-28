@@ -3,6 +3,7 @@
 
 import AppKit
 import CoreGraphics
+import QuartzCore
 
 enum Displays {
     static func online() -> [CGDirectDisplayID] {
@@ -78,13 +79,45 @@ enum Displays {
 /// the zoom without recreating the display (which would throw its windows onto another screen).
 final class VirtualMonitor {
     enum Resolution: String, CaseIterable {
-        case crisp = "Crisp — follows zoom, text stays sharp (recommended)"
-        case fhd = "Fixed 1920 × 1080 — zoom scales text"
-        case fhdHiDPI = "Fixed 1920 × 1080 HiDPI"
-        case qhd = "Fixed 2560 × 1440"
+        case crisp = "Crisp 16:9 — follows zoom, text stays sharp (recommended)"
+        case fhd = "1920 × 1080 (16:9)"
+        case fhdHiDPI = "1920 × 1080 HiDPI (16:9)"
+        case qhd = "2560 × 1440 (16:9)"
+        case wuxga = "1920 × 1200 (16:10)"
+        case wqxga = "2560 × 1600 (16:10)"
+        case uw2560 = "2560 × 1080 (21:9)"
+        case uw3440 = "3440 × 1440 (21:9)"
+        case uw3840x1080 = "3840 × 1080 (32:9)"
+        case uw3840x1200 = "3840 × 1200 (32:10)"
+        case manual = "Manual — pick it in System Settings › Displays"
+
+        var isUltrawide: Bool { self.rawValue.contains("21:9") || self.rawValue.contains("32:") }
+
+        /// (logical width, height, HiDPI); nil when the user picks the mode in System Settings.
+        func mode(coveredPixels: Double) -> (w: Int, h: Int, hiDPI: Bool)? {
+            switch self {
+            case .crisp:
+                let w = VirtualMonitor.widths.min { abs(Double($0) - coveredPixels) < abs(Double($1) - coveredPixels) }!
+                return (w, w * 9 / 16, false)
+            case .fhd: return (1920, 1080, false)
+            case .fhdHiDPI: return (1920, 1080, true)
+            case .qhd: return (2560, 1440, false)
+            case .wuxga: return (1920, 1200, false)
+            case .wqxga: return (2560, 1600, false)
+            case .uw2560: return (2560, 1080, false)
+            case .uw3440: return (3440, 1440, false)
+            case .uw3840x1080: return (3840, 1080, false)
+            case .uw3840x1200: return (3840, 1200, false)
+            case .manual: return nil
+            }
+        }
     }
 
     static let widths = [960, 1120, 1280, 1440, 1600, 1760, 1920, 2240, 2560, 3200, 3840]
+    /// Every mode the display offers, also listed in System Settings › Displays. With HiDPI on,
+    /// macOS adds a half-size "looks like" variant of each.
+    static let sizes: [(Int, Int)] = widths.map { ($0, $0 * 9 / 16) }
+        + [(1920, 1200), (2560, 1600), (2560, 1080), (3440, 1440), (3840, 1080), (3840, 1200)]
 
     private let display: CGVirtualDisplay
     var displayID: CGDirectDisplayID { display.displayID }
@@ -104,27 +137,17 @@ final class VirtualMonitor {
 
         let s = CGVirtualDisplaySettings()
         s.hiDPI = 1
-        s.modes = VirtualMonitor.widths.map { CGVirtualDisplayMode(width: UInt($0), height: UInt($0 * 9 / 16), refreshRate: 120) }
+        s.modes = VirtualMonitor.sizes.map { CGVirtualDisplayMode(width: UInt($0.0), height: UInt($0.1), refreshRate: 120) }
         guard display.apply(s), display.displayID != 0 else { return nil }
     }
 
-    /// Logical width of the mode to use: for `.crisp`, the one closest to how many glasses pixels
-    /// the screen covers, so one desktop pixel lands on one glasses pixel.
-    static func logicalWidth(for r: Resolution, coveredPixels: Double) -> (width: Int, hiDPI: Bool) {
-        switch r {
-        case .crisp: return (widths.min { abs(Double($0) - coveredPixels) < abs(Double($1) - coveredPixels) }!, false)
-        case .fhd: return (1920, false)
-        case .fhdHiDPI: return (1920, true)
-        case .qhd: return (2560, false)
-        }
-    }
-
-    func setMode(width: Int, hiDPI: Bool) {
+    func setMode(width: Int, height: Int, hiDPI: Bool) {
         let opts = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
         guard let modes = CGDisplayCopyAllDisplayModes(displayID, opts) as? [CGDisplayMode],
-              let mode = modes.first(where: { $0.width == width && $0.height == width * 9 / 16 && $0.pixelWidth == (hiDPI ? 2 * width : width) })
+              let mode = modes.first(where: { $0.width == width && $0.height == height && $0.pixelWidth == (hiDPI ? 2 * width : width) })
         else { return }
-        if let cur = CGDisplayCopyDisplayMode(displayID), cur.width == mode.width, cur.pixelWidth == mode.pixelWidth { return }
+        if let cur = CGDisplayCopyDisplayMode(displayID), cur.width == mode.width, cur.height == mode.height,
+           cur.pixelWidth == mode.pixelWidth { return }
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success else { return }
         CGConfigureDisplayWithDisplayMode(config, displayID, mode, nil)
@@ -142,7 +165,8 @@ final class CursorFence {
     var blocked: CGDirectDisplayID?
     var hideOn: CGDirectDisplayID? { didSet { if hideOn == nil { setHidden(false) } } }
     private var timer: Timer?
-    private var hidden = false
+    private var hides = 0 // outstanding CGDisplayHideCursor calls
+    private var lastHide = 0.0
 
     func start() {
         // Background apps may only hide the cursor with this WindowServer property.
@@ -154,10 +178,18 @@ final class CursorFence {
 
     func stop() { setHidden(false) }
 
+    /// The active app re-shows the cursor whenever it changes its shape (I-beam, hand…), so while
+    /// it's over the glasses the hide is re-asserted every 100 ms; leaving balances every call.
     private func setHidden(_ hide: Bool) {
-        guard hide != hidden else { return }
-        hidden = hide
-        if hide { CGDisplayHideCursor(kCGNullDirectDisplay) } else { CGDisplayShowCursor(kCGNullDirectDisplay) }
+        if hide {
+            let now = CACurrentMediaTime()
+            guard hides == 0 || now - lastHide > 0.1 else { return }
+            lastHide = now
+            CGDisplayHideCursor(kCGNullDirectDisplay)
+            hides += 1
+        } else {
+            while hides > 0 { CGDisplayShowCursor(kCGNullDirectDisplay); hides -= 1 }
+        }
     }
 
     private func check() {

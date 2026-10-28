@@ -180,7 +180,7 @@ struct AirPodsCalibration {
     struct Saved: Codable { var x: [Double]; var inverted: Bool; var lag: Double }
 
     var saved: Saved? {
-        guard let X, fitError < 0.3, pairCount >= 120 else { return nil }
+        guard let X, fitError < 0.3, pairCount >= AirPodsCalibration.neededPairs else { return nil }
         return Saved(x: [X.vector.x, X.vector.y, X.vector.z, X.vector.w], inverted: inverted, lag: lag)
     }
 
@@ -192,11 +192,18 @@ struct AirPodsCalibration {
         conventionScore = s.inverted ? 1 : -1
         lag = s.lag
         fitError = 0.2
-        pairCount = 120
+        pairCount = AirPodsCalibration.neededPairs
         seeded = true
     }
 
-    var ready: Bool { X != nil && W != nil && fitError < 0.4 && pairCount >= 120 }
+    /// Moving samples (both devices turning faster than ~14 °/s) needed: about 3 s of head turning.
+    static let neededPairs = 60
+    private(set) var lastPairTime = 0.0
+
+    var ready: Bool { X != nil && W != nil && fitError < 0.4 && pairCount >= AirPodsCalibration.neededPairs }
+
+    /// 0…1 for the calibration progress bar.
+    var progress: Double { ready ? 1 : min(Double(pairs.count) / Double(AirPodsCalibration.neededPairs), 0.95) }
 
     mutating func reset() { self = AirPodsCalibration() }
 
@@ -238,8 +245,9 @@ struct AirPodsCalibration {
             }
 
             guard let g = glasses(glassesTime(s)) else { continue }
-            if speed > 0.3, simd_length(g.omega) > 0.3 {
+            if speed > 0.25, simd_length(g.omega) > 0.25 {
                 pairs.append((g.omega, s.rate))
+                lastPairTime = s.arrival
                 if pairs.count > 3000 { pairs.removeFirst(pairs.count - 3000) }
                 newPairs += 1
             }
@@ -251,11 +259,11 @@ struct AirPodsCalibration {
         let newest = speeds.last?.t ?? 0
         speeds.removeAll { $0.t < newest - 4 }
 
-        if newPairs >= 40 {
+        if newPairs >= 20 {
             newPairs = 0
             pairCount = pairs.count
             // A seeded X is only replaced once there is as much fresh data as it was built from.
-            if !seeded || pairs.count >= 120, let x = solveRotation(pairs) {
+            if !seeded || pairs.count >= AirPodsCalibration.neededPairs, let x = solveRotation(pairs) {
                 let rms = sqrt(pairs.reduce(0) { $0 + simd_length_squared($1.b - x.act($1.a)) } / Double(pairs.count))
                 let mean = pairs.reduce(0) { $0 + simd_length($1.b) } / Double(pairs.count)
                 fitError = rms / max(mean, 1e-6)

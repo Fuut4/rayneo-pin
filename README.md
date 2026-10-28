@@ -40,12 +40,17 @@ Choose a setup under **Source**.
 |---|---|---|---|
 | **Glasses Screen** (default) | Mac + glasses | 1920×1080 (16:9) | 120 Hz |
 | **Glasses Screen Ultrawide** | Mac + glasses | 3840×1080 (32:9), using the glasses' 3D mode | 60 Hz |
-| **Virtual Display** | Mac + glasses + virtual | 960–3840 px wide, follows the zoom | 120 Hz |
+| **Virtual Display** | Mac + glasses + virtual | 16:9 following the zoom, 16:10, 21:9, 32:9 or 32:10 | 120 Hz |
 | **Mirror** a display or window | unchanged | that display or window | — |
 
 - **Glasses Screen:** you work on the glasses' own desktop, placed above the Mac's screen in the display arrangement. RayNeoPin captures it and redraws it fixed in space. The hardware cursor is hidden while it's over the glasses; the pinned image shows the cursor instead.
-- **Ultrawide:** switches the glasses to side-by-side mode, so macOS sees one 3840×1080 display. It is rendered once per eye, as a screen twice as wide as your field of view. The glasses only offer 32:9; 32:10 isn't available as a single display.
-- **Virtual Display:** a separate virtual monitor; the glasses' own display is kept off-limits to the cursor. Its **Resolution** setting is *Crisp* by default (desktop pixels map 1:1 to glasses pixels at any zoom), or a fixed size.
+- **Ultrawide:** switches the glasses to side-by-side mode, so macOS sees one 3840×1080 display. It is rendered once per eye, as a screen twice as wide as your field of view. The glasses only offer 32:9 here.
+- **Virtual Display:** a separate virtual monitor; the glasses' own display is kept off-limits to the cursor. Set its size under **Resolution**:
+  - *Crisp* (default): desktop pixels map 1:1 to glasses pixels at any zoom.
+  - 16:9, 16:10, or ultrawide 21:9 / 32:9 / 32:10 (e.g. 3840×1200), all at 120 Hz. An ultrawide screen is wider than your field of view: turn your head, or zoom out to fit it.
+  - *Manual*: pick the mode in **System Settings › Displays › RayNeoPin Display**, where every mode is listed.
+
+  Picking a resolution switches to this setup.
 
 ## Head tracking
 
@@ -59,7 +64,7 @@ Choose under **Head Tracking Source**.
 
 **AirPods** lists your paired headphones with their model and head-tracking support. Head tracking works on AirPods Pro (all), AirPods 3 and 4, AirPods Max and Beats Fit Pro. Picking one connects it and makes it the sound output, because CoreMotion follows the current output.
 
-The AirPods are calibrated automatically from normal head movement: turn your head left and right, and nod. The result is saved per pair. **Recalibrate AirPods** starts over.
+The AirPods calibrate automatically. The glasses show a progress bar; turn your head left and right and nod until it fills, which takes about 3 s of movement. A tick marks the start and a chime the end. The result is saved per pair; **Recalibrate AirPods** starts over.
 
 ## Controls
 
