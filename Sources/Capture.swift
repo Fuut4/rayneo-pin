@@ -63,7 +63,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             config.colorSpaceName = CGColorSpace.sRGB
             config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
             config.queueDepth = 4
-            config.showsCursor = true
+            // For displays we draw the cursor ourselves (smoother, and it works while the hardware
+            // cursor is hidden over the glasses); a single window keeps the captured one.
+            if case .window = source { config.showsCursor = true } else { config.showsCursor = false }
             config.scalesToFit = true
 
             let stream = SCStream(filter: filter, configuration: config, delegate: self)

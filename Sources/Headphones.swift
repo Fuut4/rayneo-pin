@@ -166,6 +166,9 @@ struct AirPodsCalibration {
     private(set) var fitError = 1.0 // rms residual / mean rate (0 = perfect)
     private(set) var pairCount = 0
     private(set) var jumps = 0
+    /// Bumped whenever W is recomputed, so users of the AirPods heading can re-reference.
+    private(set) var wVersion = 0
+    private var wStale = false // recompute W at the next sample, keeping the old one meanwhile
 
     private var speeds: [(t: Double, w: Double)] = []
     private var pairs: [(a: SIMD3<Double>, b: SIMD3<Double>)] = []
@@ -208,7 +211,7 @@ struct AirPodsCalibration {
     mutating func reset() { self = AirPodsCalibration() }
 
     /// Forget only where the AirPods' world is (after a jump, or to re-align).
-    mutating func realign() { W = nil }
+    mutating func realign() { wStale = true }
 
     func bodyToWorld(_ s: Headphones.Sample) -> simd_quatd { inverted ? s.q.inverse : s.q }
 
@@ -234,7 +237,7 @@ struct AirPodsCalibration {
                 let dt = s.time - prev.time
                 // A big instant jump means the AirPods switched buds or were reseated.
                 let jump = (prev.q.inverse * s.q).angle
-                if min(jump, 2 * .pi - jump) > 0.5, dt < 0.2 { jumps += 1; W = nil }
+                if min(jump, 2 * .pi - jump) > 0.5, dt < 0.2 { jumps += 1; wStale = true }
                 // Convention: the body rate implied by consecutive quaternions should match rotationRate.
                 if speed > 0.3, dt < 0.1 {
                     let asBodyToWorld = s.q.angularVelocity(from: prev.q, dt: dt)
@@ -251,9 +254,12 @@ struct AirPodsCalibration {
                 if pairs.count > 3000 { pairs.removeFirst(pairs.count - 3000) }
                 newPairs += 1
             }
-            if W == nil, let X, fitError < 0.4 {
+            // Refinements never make the calibration drop out: the old W stays until replaced.
+            if W == nil || wStale, let X, fitError < 0.4 {
                 W = simd_normalize(g.q * X.inverse * bodyToWorld(s).inverse)
                 xAtW = X
+                wStale = false
+                wVersion += 1
             }
         }
         let newest = speeds.last?.t ?? 0
@@ -270,7 +276,7 @@ struct AirPodsCalibration {
                 if X == nil || fitError < 0.4 { X = x }
                 // W depends on X: redo it while X is still improving.
                 if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
-                   2 * .pi - (old.inverse * X).angle > 0.005 { W = nil }
+                   2 * .pi - (old.inverse * X).angle > 0.005 { wStale = true }
             }
         }
         if let t = speeds.last?.t, t - lastLagSolve > 1 {

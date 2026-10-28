@@ -123,7 +123,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var developerPanel: NSPanel?
     var developerLabel: NSTextField?
 
+    /// SIGTERM (installer, `pkill`) skips applicationWillTerminate, which restores the hidden
+    /// cursor and puts the glasses back in 2D; route it through a normal quit instead.
+    private var termSource: DispatchSourceSignal?
+
     func applicationDidFinishLaunching(_ note: Notification) {
+        signal(SIGTERM, SIG_IGN)
+        termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        termSource?.setEventHandler { NSApp.terminate(nil) }
+        termSource?.resume()
+
         imu.onConnect = { [weak self] in
             DispatchQueue.main.async {
                 self?.applyPanelMode()
@@ -164,6 +173,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Persist the gyro bias so the next launch starts calibrated.
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.saveBias() }
+        // Our own cursor on the pinned screen, at display rate.
+        let cursorTimer = Timer(timeInterval: 1 / 120, repeats: true) { [weak self] _ in self?.updateCursor() }
+        RunLoop.main.add(cursorTimer, forMode: .common)
         // Display reconfigurations can move our windows without telling us; check every second.
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, let glasses = Displays.glasses() else { return }
@@ -219,6 +231,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Displays.arrange(above: monitor.displayID, right: Displays.glasses().map(Displays.id))
             self?.screensChanged()
         }
+    }
+
+    /// Where the system cursor is on the captured display, and what it looks like (arrow, I-beam…).
+    func updateCursor() {
+        guard let renderer else { return }
+        guard case .display(let id)? = capture.source, let screen = Displays.screen(for: id) else {
+            renderer.setCursor(nil, image: nil)
+            return
+        }
+        let m = NSEvent.mouseLocation, f = screen.frame
+        guard f.contains(m) else { renderer.setCursor(nil, image: nil); return }
+        let cursor = NSCursor.currentSystem ?? .arrow
+        let image = cursor.image, hot = cursor.hotSpot
+        renderer.setCursor(.init(x: (m.x - f.minX - hot.x) / f.width, y: (f.maxY - m.y - hot.y) / f.height,
+                                 w: image.size.width / f.width, h: image.size.height / f.height), image: image)
     }
 
     /// Switches between the display setups (see Settings.sourceKind).

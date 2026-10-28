@@ -43,7 +43,7 @@ Choose a setup under **Source**.
 | **Virtual Display** | Mac + glasses + virtual | 16:9 following the zoom, 16:10, 21:9, 32:9 or 32:10 | 120 Hz |
 | **Mirror** a display or window | unchanged | that display or window | — |
 
-- **Glasses Screen:** you work on the glasses' own desktop, placed above the Mac's screen in the display arrangement. RayNeoPin captures it and redraws it fixed in space. The hardware cursor is hidden while it's over the glasses; the pinned image shows the cursor instead.
+- **Glasses Screen:** you work on the glasses' own desktop, placed above the Mac's screen in the display arrangement. RayNeoPin captures it and redraws it fixed in space. The hardware cursor is hidden while it's over the glasses. RayNeoPin draws its own cursor (current shape, at display rate) on the pinned screen in every setup.
 - **Ultrawide:** switches the glasses to side-by-side mode, so macOS sees one 3840×1080 display. It is rendered once per eye, as a screen twice as wide as your field of view. The glasses only offer 32:9 here.
 - **Virtual Display:** a separate virtual monitor; the glasses' own display is kept off-limits to the cursor. Set its size under **Resolution**:
   - *Crisp* (default): desktop pixels map 1:1 to glasses pixels at any zoom.

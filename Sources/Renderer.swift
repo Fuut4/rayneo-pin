@@ -66,7 +66,8 @@ final class Renderer: NSObject {
     private var aspect = 16.0 / 9.0
 
     private let lock = NSLock()
-    private var params = Params()
+    // RAYNEOPIN_STILL=1 (testing): keep the screen centered, ignoring head tracking.
+    private var params = Params(paused: ProcessInfo.processInfo.environment["RAYNEOPIN_STILL"] != nil)
     private var recenterRequested = true
     private var airPodsResetRequested = false
     private var developerDisplayInfo = "" // built on the main thread (NSScreen isn't thread-safe)
@@ -85,6 +86,8 @@ final class Renderer: NSObject {
     private var calibration = AirPodsCalibration()
     private var airPodsNote = "" // why AirPods aren't used right now, for the HUD
     private var airPodsCalibrating = false // for start/finish sounds
+    private var airPodsAnnounced = false // sounds/toast only for the first calibration, never for refinements
+    private var lastWVersion = 0
     private var devAirPodsDelay = 0.0
     private var devYawGap: Double?
     private var hasPose = false
@@ -113,11 +116,13 @@ final class Renderer: NSObject {
     struct VOut { float4 position [[position]]; float2 uv; };
     // mvp[0] is predicted for when the top row lights up, mvp[1] for the bottom row (the panel
     // scans out top to bottom); each vertex blends by where it lands on screen.
-    vertex VOut vs(uint vid [[vertex_id]], constant float4x4 *mvp [[buffer(0)]]) {
+    // rect places a sub-quad on the screen plane (center xy, size zw); (0,0,1,1) is the whole screen.
+    vertex VOut vs(uint vid [[vertex_id]], constant float4x4 *mvp [[buffer(0)]], constant float4 &rect [[buffer(1)]]) {
         float2 c[4] = { float2(-0.5, -0.5), float2(0.5, -0.5), float2(-0.5, 0.5), float2(0.5, 0.5) };
         VOut o;
-        float4 top = mvp[0] * float4(c[vid], 0, 1);
-        float4 bottom = mvp[1] * float4(c[vid], 0, 1);
+        float2 p = c[vid] * rect.zw + rect.xy;
+        float4 top = mvp[0] * float4(p, 0, 1);
+        float4 bottom = mvp[1] * float4(p, 0, 1);
         float row = top.w > 0.0001 ? clamp(0.5 - 0.5 * top.y / top.w, 0.0, 1.0) : 0.0;
         o.position = mix(top, bottom, row);
         o.uv = float2(c[vid].x + 0.5, 0.5 - c[vid].y);
@@ -153,6 +158,12 @@ final class Renderer: NSObject {
         pd.vertexFunction = library.makeFunction(name: "vs")
         pd.fragmentFunction = library.makeFunction(name: "fs")
         pd.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+        // Premultiplied alpha, for the cursor; the opaque screen is unaffected.
+        pd.colorAttachments[0].isBlendingEnabled = true
+        pd.colorAttachments[0].sourceRGBBlendFactor = .one
+        pd.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        pd.colorAttachments[0].sourceAlphaBlendFactor = .one
+        pd.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         pipeline = try device.makeRenderPipelineState(descriptor: pd)
 
         let sd = MTLSamplerDescriptor()
@@ -273,6 +284,43 @@ final class Renderer: NSObject {
         return params
     }
 
+    /// Cursor drawn by us on the pinned screen: top-left corner and size, as fractions of the screen.
+    /// (The hardware cursor is hidden over the glasses, and a hidden cursor isn't captured.)
+    struct CursorPlacement { var x: Double; var y: Double; var w: Double; var h: Double }
+    private var cursor: CursorPlacement?
+    private var cursorTexture: MTLTexture?
+    private var cursorImage: ObjectIdentifier?
+
+    /// Main thread, every display refresh.
+    func setCursor(_ placement: CursorPlacement?, image: NSImage?) {
+        var texture: MTLTexture?
+        if let image, ObjectIdentifier(image) != cursorImage {
+            texture = makeTexture(image)
+        }
+        lock.lock()
+        cursor = placement
+        if let texture, let image { cursorTexture = texture; cursorImage = ObjectIdentifier(image) }
+        lock.unlock()
+    }
+
+    /// Renders an NSImage at 2× into a premultiplied BGRA texture.
+    private func makeTexture(_ image: NSImage) -> MTLTexture? {
+        let w = max(Int(image.size.width * 2), 1), h = max(Int(image.size.height * 2), 1)
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue),
+              let data = ctx.data else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
+        image.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
+        NSGraphicsContext.restoreGraphicsState()
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: w, height: h, mipmapped: false)
+        d.usage = [.shaderRead]
+        let t = device.makeTexture(descriptor: d)
+        t?.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: ctx.bytesPerRow)
+        return t
+    }
+
     /// True once AirPods headings are actually correcting the glasses.
     var isUsingAirPods: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -341,11 +389,13 @@ final class Renderer: NSObject {
             calibration.reset()
             heading = HeadingReference()
             devYawGap = nil
+            airPodsAnnounced = false
         }
         if let seed = airPodsSeed {
             airPodsSeed = nil
             calibration.reset()
             calibration.seed(seed)
+            airPodsAnnounced = true // known AirPods: calibrate silently
         }
         airPodsSaved = calibration.saved ?? airPodsSaved
         let notice = notice
@@ -373,16 +423,25 @@ final class Renderer: NSObject {
             }
             if let airpods { devAirPodsDelay = CACurrentMediaTime() - airpods.time }
         }
+        // A refined calibration means a new AirPods heading reference: re-take the offset so the
+        // correction doesn't drift toward the old one.
+        if calibration.wVersion != lastWVersion {
+            lastWVersion = calibration.wVersion
+            heading.reset()
+        }
         let calibrating = p.tracking != .glasses && airpods != nil && !calibration.ready
-        if calibrating != airPodsCalibrating {
-            airPodsCalibrating = calibrating
-            // Audible start/finish: nobody can read a progress bar while turning their head.
-            let done = !calibrating && calibration.ready
-            if calibrating || done {
-                DispatchQueue.main.async { NSSound(named: calibrating ? "Tink" : "Glass")?.play() }
-                if done { show("AirPods calibrated", seconds: 2) }
+        if calibrating != airPodsCalibrating, !airPodsAnnounced {
+            // Audible start/finish of the first calibration only: nobody can read a progress bar
+            // while turning their head, and refinements later on happen silently.
+            if calibrating {
+                DispatchQueue.main.async { NSSound(named: "Tink")?.play() }
+            } else if calibration.ready {
+                airPodsAnnounced = true
+                DispatchQueue.main.async { NSSound(named: "Glass")?.play() }
+                show("AirPods calibrated", seconds: 2)
             }
         }
+        airPodsCalibrating = calibrating
         if calibrating {
             let filled = Int((calibration.progress * 20).rounded())
             let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
@@ -625,16 +684,30 @@ final class Renderer: NSObject {
             // Side-by-side: each eye gets half the panel with the same view (flat screen, no parallax).
             let eyes = stereo ? [0.0, w / 2] : [0.0]
             let eyeW = stereo ? w / 2 : w
-            var sharpness = Float(p.sharpness)
+            lock.lock()
+            let cursor = cursor, cursorTexture = cursorTexture
+            lock.unlock()
             enc.setRenderPipelineState(pipeline)
-            enc.setFragmentBytes(&sharpness, length: MemoryLayout<Float>.stride, index: 0)
-            enc.setFragmentTexture(tex, index: 0)
             enc.setFragmentSamplerState(sampler, index: 0)
             for x in eyes {
                 enc.setViewport(MTLViewport(originX: x, originY: 0, width: eyeW, height: h, znear: 0, zfar: 1))
                 var mvp = [matrix(head: head, params: p, view: (eyeW, h)), matrix(head: headBottom, params: p, view: (eyeW, h))]
                 enc.setVertexBytes(&mvp, length: MemoryLayout<simd_float4x4>.stride * 2, index: 0)
+                var whole = SIMD4<Float>(0, 0, 1, 1)
+                var sharpness = Float(p.sharpness)
+                enc.setVertexBytes(&whole, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+                enc.setFragmentBytes(&sharpness, length: MemoryLayout<Float>.stride, index: 0)
+                enc.setFragmentTexture(tex, index: 0)
                 enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                if let c = cursor, let cursorTexture {
+                    // Screen-plane coordinates run −0.5…0.5, y up; the placement is top-left based.
+                    var rect = SIMD4<Float>(Float(c.x + c.w / 2 - 0.5), Float(0.5 - c.y - c.h / 2), Float(c.w), Float(c.h))
+                    var none: Float = 0
+                    enc.setVertexBytes(&rect, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
+                    enc.setFragmentBytes(&none, length: MemoryLayout<Float>.stride, index: 0)
+                    enc.setFragmentTexture(cursorTexture, index: 0)
+                    enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                }
             }
         }
         enc.endEncoding()
