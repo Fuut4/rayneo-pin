@@ -7,6 +7,7 @@
 import AppKit
 import Carbon.HIToolbox
 import ScreenCaptureKit
+import ServiceManagement
 import simd
 
 // MARK: - Settings
@@ -53,6 +54,47 @@ final class Settings {
         d.set(try? JSONEncoder().encode(c), forKey: "airpods." + address)
     }
 
+    /// On/off options added on the test branch, with their defaults.
+    static let flagDefaults: [String: Bool] = [
+        "motionSharpen": true, "smartFilter": true, "pixelLock": true, "curved": true,
+        "follow": false, "lookAwayRecenter": false, "doubleTap": true,
+        "strictAccel": true, "temperatureComp": true, "airPodsBias": true, "airPodsScale": false,
+        "cameraDrift": false, "typingDrift": false,
+        "predictFiltered": true, "skipIdle": true, "metalHUD": false,
+    ]
+
+    func flag(_ key: String) -> Bool { bool(key, Settings.flagDefaults[key] ?? false) }
+    func setFlag(_ key: String, _ value: Bool) { d.set(value, forKey: key) }
+
+    /// Multiple-choice options, stored as strings.
+    static let choiceDefaults: [String: String] = [
+        "sharpenStyle": SharpenStyle.rcas.rawValue, "smoothing": SmoothingMode.oneEuro.rawValue,
+        "pacing": FramePacing.metalLink.rawValue, "fusion": Fusion.Mode.complementary.rawValue,
+        "warmth": "0", "brightness": "1", "yawGain": "1", "followDeadzone": "20", "predictionTrim": "0",
+        "sideScreens": "off",
+    ]
+
+    func choice(_ key: String) -> String { d.string(forKey: key) ?? Settings.choiceDefaults[key] ?? "" }
+    func setChoice(_ key: String, _ value: String) { d.set(value, forKey: key) }
+    private func number(_ key: String) -> Double { Double(choice(key)) ?? Double(Settings.choiceDefaults[key] ?? "") ?? 0 }
+
+    /// Screen height: degrees above (+) or below (−) eye level.
+    var screenPitch: Double { get { double("screenPitch", 0) } set { d.set(newValue, forKey: "screenPitch") } }
+
+    var gyroScale: SIMD3<Double> {
+        get { (d.array(forKey: "gyroScale") as? [Double]).flatMap { $0.count == 3 ? SIMD3($0[0], $0[1], $0[2]) : nil } ?? SIMD3(repeating: 1) }
+        set { d.set([newValue.x, newValue.y, newValue.z], forKey: "gyroScale") }
+    }
+
+    var temperatureModel: TemperatureModel? {
+        get { d.data(forKey: "temperatureModel").flatMap { try? JSONDecoder().decode(TemperatureModel.self, from: $0) } }
+        set { d.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "temperatureModel") }
+    }
+
+    var fusionMode: Fusion.Mode { Fusion.Mode(rawValue: choice("fusion")) ?? .complementary }
+    var pacing: FramePacing { FramePacing(rawValue: choice("pacing")) ?? .metalLink }
+    var sideScreens: String { choice("sideScreens") }
+
     var gyroBias: SIMD3<Double>? {
         get { (d.array(forKey: "gyroBias") as? [Double]).flatMap { $0.count == 3 ? SIMD3($0[0], $0[1], $0[2]) : nil } }
         set { d.set(newValue.map { [$0.x, $0.y, $0.z] }, forKey: "gyroBias") }
@@ -69,6 +111,27 @@ final class Settings {
         p.tracking = tracking
         p.developer = developer
         p.sharpness = sharpness
+        p.sharpenStyle = SharpenStyle(rawValue: choice("sharpenStyle")) ?? .rcas
+        p.motionSharpen = flag("motionSharpen")
+        p.smartFilter = flag("smartFilter")
+        p.pixelLock = flag("pixelLock")
+        p.curved = flag("curved")
+        p.warmth = number("warmth")
+        p.brightness = number("brightness")
+        p.follow = flag("follow")
+        p.followDeadzone = number("followDeadzone") * .pi / 180
+        p.lookAwayRecenter = flag("lookAwayRecenter")
+        p.screenPitch = screenPitch * .pi / 180
+        p.yawGain = number("yawGain")
+        p.smoothing = SmoothingMode(rawValue: choice("smoothing")) ?? .oneEuro
+        p.predictFiltered = flag("predictFiltered")
+        p.predictionTrim = number("predictionTrim") / 1000
+        p.skipIdle = flag("skipIdle")
+        p.airPodsBias = flag("airPodsBias")
+        p.airPodsScale = flag("airPodsScale")
+        p.cameraDrift = flag("cameraDrift")
+        p.typingDrift = flag("typingDrift")
+        p.metalHUD = flag("metalHUD")
     }
 }
 
@@ -122,6 +185,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var resolutionWork: DispatchWorkItem?
     var developerPanel: NSPanel?
     var developerLabel: NSTextField?
+    // Test branch
+    let readabilityMenu = NSMenu()
+    let anchoringMenu = NSMenu()
+    let driftMenu = NSMenu()
+    let latencyMenu = NSMenu()
+    /// Side screens beside the pinned one (Virtual Display setup), by side (−1 left, +1 right).
+    var sideMonitors: [Int: VirtualMonitor] = [:]
+    var sideCaptures: [Int: Capture] = [:]
+    var face: FaceTracker?
+    let caretQueue = DispatchQueue(label: "caret", qos: .utility)
+    var caretBusy = false
+    var lastCaret: CGRect?
+    var lastCaretMove = 0.0
+    var wasAsleep = false
+    var yawScaleStart: Double?
+    var cursorSeed: Int?
+    var cursorShape: Int?
+    var cursorLook: (image: NSImage, hotSpot: NSPoint)?
 
     /// SIGTERM (installer, `pkill`) skips applicationWillTerminate, which restores the hidden
     /// cursor and puts the glasses back in 2D; route it through a normal quit instead.
@@ -133,6 +214,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         termSource?.setEventHandler { NSApp.terminate(nil) }
         termSource?.resume()
 
+        imu.scale = settings.gyroScale
+        if let model = settings.temperatureModel { imu.temperatureModel = model }
+        imu.onDoubleTap = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, self.settings.flag("doubleTap"), self.calibrationTimer == nil else { return }
+                NSSound(named: "Pop")?.play()
+                self.renderer?.recenter()
+                self.renderer?.show("Recentered (double tap)", seconds: 1)
+            }
+        }
         imu.onConnect = { [weak self] in
             DispatchQueue.main.async {
                 self?.applyPanelMode()
@@ -155,7 +246,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (kVK_ANSI_K, { [weak self] in self?.fov(-1) }),
             (kVK_ANSI_D, { [weak self] in self?.toggleDeveloper() }),
             (kVK_ANSI_Q, { NSApp.terminate(nil) }),
+            (kVK_ANSI_1, { [weak self] in self?.applyPreset("desk") }),
+            (kVK_ANSI_2, { [weak self] in self?.applyPreset("sofa") }),
+            (kVK_ANSI_3, { [weak self] in self?.applyPreset("lying") }),
+            (kVK_UpArrow, { [weak self] in self?.height(2) }),
+            (kVK_DownArrow, { [weak self] in self?.height(-2) }),
+            (kVK_ANSI_F, { [weak self] in self?.flip("follow", "Smooth Follow") }),
+            (kVK_ANSI_G, { [weak self] in self?.calibrateYawScale() }),
         ])
+        // A fullscreen app on another Space can freeze the capture; re-applying its filter fixes it.
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            for delay in [0.3, 1.2] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.refreshCaptures() }
+            }
+        }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in self?.screensChanged() }
         capture.onError = { [weak self] msg in
@@ -173,15 +278,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Persist the gyro bias so the next launch starts calibrated.
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.saveBias() }
-        // Our own cursor on the pinned screen, at display rate.
-        let cursorTimer = Timer(timeInterval: 1 / 120, repeats: true) { [weak self] _ in self?.updateCursor() }
+        // One display-rate timer for the cursor fence and our own cursor on the pinned screen.
+        let cursorTimer = Timer(timeInterval: 1 / 120, repeats: true) { [weak self] _ in
+            guard let self, self.renderer != nil else { return }
+            self.fence.check()
+            if !self.wasAsleep { self.updateCursor() }
+        }
         RunLoop.main.add(cursorTimer, forMode: .common)
+        // The caret, for the typing drift hint (10 Hz, off the main thread: AX calls can block).
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.pollCaret() }
         // Windows that end up on the fenced glasses display would be unreachable: move them out.
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.rescueWindows() }
         // Display reconfigurations can move our windows without telling us; check every second.
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, let glasses = Displays.glasses() else { return }
             self.renderer?.keepOn(glasses)
+            // Glasses taken off: stop capturing until they're worn again.
+            let asleep = self.imu.isAsleep
+            if asleep != self.wasAsleep {
+                self.wasAsleep = asleep
+                let captures = [self.capture] + Array(self.sideCaptures.values)
+                Task { for c in captures { if asleep { await c.pause() } else { await c.resume() } } }
+            }
             if self.settings.developer { self.renderer?.setDeveloperDisplayInfo(self.developerDisplayInfo()) }
             if self.settings.developer, self.settings.developerOnMac, let panel = self.developerPanel, !NSScreen.screens.contains(where: {
                 $0.frame.intersects(panel.frame) && Displays.id(of: $0) != Displays.id(of: glasses)
@@ -191,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         fence.start()
         applySetup()
+        applyExtras()
         if settings.developer && settings.developerOnMac { showDeveloperPanel(true) }
     }
 
@@ -205,6 +324,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func saveBias() {
         if imu.snapshot().state == .ready { settings.gyroBias = imu.bias }
+        settings.gyroScale = imu.scale
+        if !imu.temperatureModel.isEmpty { settings.temperatureModel = imu.temperatureModel }
         if let c = renderer?.airPodsCalibration, let address = HeadphoneCatalog.currentOutputAddress() {
             settings.setAirPodsCalibration(c, for: address)
         }
@@ -232,7 +353,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.applyResolution()
             Displays.arrange(above: monitor.displayID, right: Displays.glasses().map(Displays.id))
             self?.screensChanged()
+            self?.applySideScreens()
         }
+    }
+
+    /// Extra virtual displays left/right of the pinned one, each drawn beside it in the glasses.
+    func applySideScreens() {
+        let wanted: Set<Int> = settings.sourceKind != "virtual" || monitor == nil ? [] : [
+            "left": [-1], "right": [1], "both": [-1, 1],
+        ][settings.sideScreens] ?? []
+        for side in sideMonitors.keys where !wanted.contains(side) {
+            sideMonitors[side] = nil // releasing it removes the display
+            if let c = sideCaptures.removeValue(forKey: side) { Task { await c.stop() } }
+        }
+        for side in wanted where sideMonitors[side] == nil {
+            guard let m = VirtualMonitor(name: side < 0 ? "RayNeoPin Left" : "RayNeoPin Right", index: side < 0 ? 1 : 2) else { continue }
+            sideMonitors[side] = m
+            let c = Capture()
+            c.ownWindowIDs = capture.ownWindowIDs
+            sideCaptures[side] = c
+        }
+        renderer?.setSideScreens(sideCaptures.map { ($0.value, $0.key) })
+        guard !wanted.isEmpty, let main = monitor else { return }
+        // Like the main one, new displays need a moment before they can be configured.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            for m in self.sideMonitors.values { m.setMode(width: 1920, height: 1080, hiDPI: false) }
+            Displays.arrangeSides(of: main.displayID, left: self.sideMonitors[-1]?.displayID, right: self.sideMonitors[1]?.displayID)
+            for (side, c) in self.sideCaptures {
+                guard let m = self.sideMonitors[side] else { continue }
+                Task { await c.start(.display(m.displayID)) }
+            }
+        }
+    }
+
+    func refreshCaptures() {
+        let captures = [capture] + Array(sideCaptures.values)
+        Task { for c in captures { await c.refreshFilter() } }
     }
 
     private var askedAccessibility = false
@@ -251,19 +408,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if result.moved > 0 { renderer?.show("Moved \(result.moved) window\(result.moved == 1 ? "" : "s") off the glasses' hidden display", seconds: 3) }
     }
 
-    /// Where the system cursor is on the captured display, and what it looks like (arrow, I-beam…).
+    /// WindowServer's cursor seed changes only when the cursor's shape changes. macOS hands out a
+    /// new NSCursor object on every query, so without it the cursor texture was rebuilt each frame.
+    static let currentCursorSeed: (@convention(c) () -> Int32)? = {
+        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGSCurrentCursorSeed") else { return nil } // RTLD_DEFAULT
+        return unsafeBitCast(sym, to: (@convention(c) () -> Int32).self)
+    }()
+
+    /// Where the system cursor is on a captured display, and what it looks like (arrow, I-beam…).
     func updateCursor() {
         guard let renderer else { return }
-        guard case .display(let id)? = capture.source, let screen = Displays.screen(for: id) else {
-            renderer.setCursor(nil, image: nil)
+        var targets: [(Int, CGDirectDisplayID)] = []
+        if case .display(let id)? = capture.source { targets.append((0, id)) }
+        for (side, m) in sideMonitors { targets.append((side, m.displayID)) }
+        let m = NSEvent.mouseLocation
+        guard let (side, screen) = targets.lazy.compactMap({ t in Displays.screen(for: t.1).map { (t.0, $0) } })
+            .first(where: { $0.1.frame.contains(m) }) else {
+            renderer.setCursor(nil, shape: nil) { nil }
             return
         }
-        let m = NSEvent.mouseLocation, f = screen.frame
-        guard f.contains(m) else { renderer.setCursor(nil, image: nil); return }
-        let cursor = NSCursor.currentSystem ?? .arrow
-        let image = cursor.image, hot = cursor.hotSpot
+        let seed = AppDelegate.currentCursorSeed.map { Int($0()) }
+        if seed == nil || seed != cursorSeed || cursorLook == nil {
+            let cursor = NSCursor.currentSystem ?? .arrow
+            cursorLook = (cursor.image, cursor.hotSpot)
+            cursorSeed = seed
+            cursorShape = seed ?? AppDelegate.fingerprint(cursor.image, cursor.hotSpot)
+        }
+        guard let look = cursorLook else { return }
+        let f = screen.frame, hot = look.hotSpot, size = look.image.size
         renderer.setCursor(.init(x: (m.x - f.minX - hot.x) / f.width, y: (f.maxY - m.y - hot.y) / f.height,
-                                 w: image.size.width / f.width, h: image.size.height / f.height), image: image)
+                                 w: size.width / f.width, h: size.height / f.height, panel: side),
+                           shape: cursorShape) { look.image }
+    }
+
+    /// Identifies a cursor image without the seed: hot spot, size and an 8×8 thumbnail.
+    static func fingerprint(_ image: NSImage, _ hot: NSPoint) -> Int {
+        var h = Hasher()
+        h.combine(hot.x); h.combine(hot.y); h.combine(image.size.width); h.combine(image.size.height)
+        if let ctx = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                               space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+           let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 8, height: 8))
+            if let data = ctx.data { h.combine(bytes: UnsafeRawBufferPointer(start: data, count: 256)) }
+        }
+        return h.finalize()
+    }
+
+    /// The caret's position on the pinned screen, and when it last moved (= you're typing).
+    func pollCaret() {
+        guard settings.flag("typingDrift"), let renderer, !caretBusy, case .display(let id)? = capture.source else { return }
+        caretBusy = true
+        caretQueue.async { [weak self] in
+            let rect = Caret.rect()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.caretBusy = false
+                guard let rect else { renderer.setCaret(nil); return }
+                let now = CACurrentMediaTime()
+                if rect != self.lastCaret { self.lastCaret = rect; self.lastCaretMove = now }
+                let b = CGDisplayBounds(id)
+                guard b.contains(CGPoint(x: rect.midX, y: rect.midY)) else { renderer.setCaret(nil); return }
+                renderer.setCaret(CaretPoint(x: (rect.midX - b.minX) / b.width, y: (rect.midY - b.minY) / b.height,
+                                             panel: 0, time: self.lastCaretMove))
+            }
+        }
     }
 
     /// Switches between the display setups (see Settings.sourceKind).
@@ -277,6 +485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyPanelMode()
         screensChanged()
         arrangedFor = nil
+        if monitor != nil || !sideMonitors.isEmpty { applySideScreens() }
     }
 
     /// 3D (3840×1080 @60) for ultrawide, otherwise 2D at the chosen refresh rate.
@@ -340,8 +549,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let r = renderer, let glasses { r.keepOn(glasses) }
         if renderer == nil, let glasses, let gid {
             do {
-                let r = try Renderer(screen: glasses, displayID: gid, imu: imu, capture: capture, headphones: headphones)
+                let r = try Renderer(screen: glasses, displayID: gid, imu: imu, capture: capture, headphones: headphones,
+                                     pacing: settings.pacing)
                 r.update { settings.apply(to: &$0) }
+                r.setFaceTracker(face)
+                r.setSideScreens(sideCaptures.map { ($0.value, $0.key) })
                 r.onDeveloperText = { [weak self] text in self?.developerLabel?.stringValue = text }
                 renderer = r
                 seedAirPodsCalibration()
@@ -432,6 +644,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Recalibrate AirPods", #selector(recalibrateAirPods)))
         menu.addItem(toggle("Auto Drift Correction (follows your gaze)", #selector(toggleAutoRecenter)) { [weak self] in self?.settings.autoRecenter == true })
         menu.addItem(.separator())
+        menu.addItem(header("Test branch — try each, keep what helps"))
+        menu.addItem(submenu("Readability", readabilityMenu))
+        menu.addItem(submenu("Anchoring", anchoringMenu))
+        menu.addItem(submenu("Drift & Accuracy", driftMenu))
+        menu.addItem(submenu("Latency & CPU", latencyMenu))
+        menu.addItem(.separator())
         menu.addItem(header("Display"))
         menu.addItem(item("Zoom In  ⌃⌥I", #selector(zoomIn)))
         menu.addItem(item("Zoom Out  ⌃⌥O", #selector(zoomOut)))
@@ -445,6 +663,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(toggle("Developer Mode (data in the glasses)  ⌃⌥D", #selector(toggleDeveloper)) { [weak self] in self?.settings.developer == true })
         menu.addItem(toggle("Also Show Developer Data on the Mac", #selector(toggleDeveloperOnMac)) { [weak self] in self?.settings.developerOnMac == true })
+        menu.addItem(toggle("Open at Login", #selector(toggleLogin)) { SMAppService.mainApp.status == .enabled })
         menu.addItem(item("☕ Buy Me a Coffee — help pay Claude's bill", #selector(coffee)))
         menu.addItem(item("Check for Updates…", #selector(update)))
         menu.addItem(item("Quit  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
@@ -517,7 +736,233 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             i.state = abs(settings.sharpness - value) < 0.01 ? .on : .off
             sharpnessMenu.addItem(i)
         }
+        rebuildTestMenus()
         Task { @MainActor in await refreshSources() }
+    }
+
+    // MARK: Test-branch menus
+
+    /// A checkmark item bound to a Settings flag.
+    func flagItem(_ title: String, _ key: String) -> NSMenuItem {
+        let i = item(title, #selector(pickFlag(_:)))
+        i.representedObject = [key, title]
+        i.state = settings.flag(key) ? .on : .off
+        return i
+    }
+
+    /// A submenu of exclusive choices bound to a Settings choice.
+    func choiceMenu(_ title: String, _ key: String, _ options: [(String, String)]) -> NSMenuItem {
+        let menu = NSMenu()
+        for (name, value) in options {
+            let i = item(name, #selector(pickChoice(_:)))
+            i.representedObject = [key, value, name]
+            i.state = settings.choice(key) == value ? .on : .off
+            menu.addItem(i)
+        }
+        return submenu(title, menu)
+    }
+
+    func rebuildTestMenus() {
+        let r = readabilityMenu
+        r.removeAllItems()
+        r.addItem(choiceMenu("Sharpening Style", "sharpenStyle", SharpenStyle.allCases.map { ($0.title, $0.rawValue) }))
+        r.addItem(flagItem("Sharpen Only When Still (no crawling text while turning)", "motionSharpen"))
+        r.addItem(flagItem("Smart Sampling (bicubic when enlarged, 4× when shrunk)", "smartFilter"))
+        r.addItem(flagItem("Pixel Lock When Still (exact 1:1 pixels near 100% scale)", "pixelLock"))
+        r.addItem(flagItem("Curved Ultrawide Screen", "curved"))
+        r.addItem(.separator())
+        r.addItem(header("Eye comfort"))
+        r.addItem(choiceMenu("Warmth", "warmth", [("Off", "0"), ("Low", "0.3"), ("Medium", "0.6"), ("High", "1")]))
+        r.addItem(choiceMenu("Brightness", "brightness", [("100%", "1"), ("85%", "0.85"), ("70%", "0.7"), ("50%", "0.5"), ("35%", "0.35")]))
+
+        let a = anchoringMenu
+        a.removeAllItems()
+        a.addItem(header("Presets"))
+        a.addItem(item("Desk — screen fixed in space  ⌃⌥1", #selector(presetDesk)))
+        a.addItem(item("Sofa — follows you, no tilt  ⌃⌥2", #selector(presetSofa)))
+        a.addItem(item("Lying Down — follows you, level, any height  ⌃⌥3", #selector(presetLying)))
+        a.addItem(.separator())
+        a.addItem(flagItem("Smooth Follow (screen glides back in front of you)  ⌃⌥F", "follow"))
+        a.addItem(choiceMenu("Follow Dead Zone", "followDeadzone", [("10°", "10"), ("20°", "20"), ("30°", "30"), ("45°", "45")]))
+        a.addItem(flagItem("Recenter After Looking Away for a While", "lookAwayRecenter"))
+        a.addItem(flagItem("Double-Tap the Glasses to Recenter", "doubleTap"))
+        a.addItem(choiceMenu("Neck Saver (turn less, see more)", "yawGain", [("Off", "1"), ("1.25×", "1.25"), ("1.5×", "1.5"), ("2×", "2")]))
+        a.addItem(item("Raise Screen  ⌃⌥↑", #selector(heightUp)))
+        a.addItem(item("Lower Screen  ⌃⌥↓", #selector(heightDown)))
+        a.addItem(item(String(format: "Reset Screen Height (now %+.0f°)", settings.screenPitch), #selector(heightReset)))
+        a.addItem(choiceMenu("Side Screens (Virtual Display setup)", "sideScreens",
+                             [("Off", "off"), ("One on the Left", "left"), ("One on the Right", "right"), ("Both Sides", "both")]))
+
+        let d = driftMenu
+        d.removeAllItems()
+        d.addItem(choiceMenu("Sensor Fusion", "fusion", [("Complementary (current)", Fusion.Mode.complementary.rawValue),
+                                                         ("Kalman with bias state (experimental)", Fusion.Mode.kalman.rawValue)]))
+        d.addItem(flagItem("Strict Gravity Rejection While Accelerating", "strictAccel"))
+        d.addItem(flagItem("Temperature Compensation (learns bias vs. °C)", "temperatureComp"))
+        d.addItem(flagItem("Learn Glasses Gyro Bias from AirPods", "airPodsBias"))
+        d.addItem(flagItem("Learn Glasses Gyro Sensitivity from AirPods", "airPodsScale"))
+        d.addItem(item(yawScaleStart == nil ? "Calibrate Turn Sensitivity (turn a full circle)…  ⌃⌥G"
+                       : "Finish Turn Calibration (facing the start again)  ⌃⌥G", #selector(calibrateYawScale)))
+        let sc = imu.scale
+        d.addItem(item(String(format: "Reset Gyro Sensitivity (now %.4f %.4f %.4f)", sc.x, sc.y, sc.z), #selector(resetScale)))
+        d.addItem(item("Forget Temperature Model", #selector(resetTemperature)))
+        d.addItem(.separator())
+        d.addItem(header("Crazy ideas"))
+        d.addItem(flagItem("Mac Camera as Drift Reference (sees your face)", "cameraDrift"))
+        d.addItem(flagItem("Typing Hint (you look at the caret while typing)", "typingDrift"))
+        d.addItem(item("Probe Glasses Calibration (read-only, see Developer Mode)", #selector(probeCalibration)))
+
+        let l = latencyMenu
+        l.removeAllItems()
+        l.addItem(choiceMenu("Smoothing", "smoothing", SmoothingMode.allCases.map { ($0.title, $0.rawValue) }))
+        l.addItem(flagItem("Predict from the Filtered Pose (less jitter)", "predictFiltered"))
+        l.addItem(choiceMenu("Frame Pacing", "pacing", FramePacing.allCases.map { ($0.title, $0.rawValue) }))
+        l.addItem(choiceMenu("Prediction Trim", "predictionTrim",
+                             [("−8 ms", "-8"), ("−4 ms", "-4"), ("0 (default)", "0"), ("+4 ms", "4"), ("+8 ms", "8"), ("+12 ms", "12")]))
+        l.addItem(.separator())
+        l.addItem(flagItem("Skip Frames When Nothing Changes (saves CPU/GPU)", "skipIdle"))
+        l.addItem(flagItem("Metal Performance HUD in the Glasses", "metalHUD"))
+    }
+
+    @objc func pickFlag(_ sender: NSMenuItem) {
+        guard let rep = sender.representedObject as? [String], rep.count == 2 else { return }
+        flip(rep[0], rep[1])
+    }
+
+    func flip(_ key: String, _ title: String) {
+        settings.setFlag(key, !settings.flag(key))
+        let on = settings.flag(key)
+        if key == "follow" || key == "lookAwayRecenter" { renderer?.recenter() }
+        applyExtras()
+        renderer?.show("\(title): \(on ? "on" : "off")", seconds: 2)
+    }
+
+    @objc func pickChoice(_ sender: NSMenuItem) {
+        guard let rep = sender.representedObject as? [String], rep.count == 3 else { return }
+        let (key, value, name) = (rep[0], rep[1], rep[2])
+        let old = settings.choice(key)
+        settings.setChoice(key, value)
+        applyExtras()
+        if key == "pacing", old != value { rebuildRenderer() }
+        if key == "sideScreens" {
+            if value != "off", settings.sourceKind != "virtual" {
+                settings.sourceKind = "virtual" // side screens are extra virtual displays
+                applySetup()
+            } else {
+                applySideScreens()
+            }
+        }
+        renderer?.show(name, seconds: 2)
+    }
+
+    /// Pushes every setting to the renderer, the sensor fusion and the optional references.
+    func applyExtras() {
+        renderer?.update { settings.apply(to: &$0) }
+        imu.configure(mode: settings.fusionMode, strictAccel: settings.flag("strictAccel"), temperature: settings.flag("temperatureComp"))
+        if settings.flag("cameraDrift") {
+            if face == nil {
+                face = FaceTracker()
+                face?.start()
+            }
+        } else if let f = face {
+            f.stop()
+            face = nil
+        }
+        renderer?.setFaceTracker(face)
+        if !settings.flag("typingDrift") { renderer?.setCaret(nil) }
+        if settings.flag("typingDrift"), !AXIsProcessTrusted() {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        }
+    }
+
+    func rebuildRenderer() {
+        renderer?.shutdown()
+        renderer = nil
+        screensChanged()
+    }
+
+    @objc func presetDesk() { applyPreset("desk") }
+    @objc func presetSofa() { applyPreset("sofa") }
+    @objc func presetLying() { applyPreset("lying") }
+
+    /// Desk: fixed in space. Sofa: follows you past a dead zone, no tilt. Lying down: also level
+    /// (pitch follows your head), so it stays in view whatever angle you lie at.
+    func applyPreset(_ name: String) {
+        let follow = name != "desk"
+        settings.setFlag("follow", follow)
+        settings.lockYaw = false
+        settings.lockPitch = name == "lying"
+        settings.lockRoll = name != "desk"
+        applyExtras()
+        renderer?.recenter()
+        renderer?.show(["desk": "Desk: screen fixed in space", "sofa": "Sofa: screen follows you, no tilt",
+                        "lying": "Lying down: screen follows you, level"][name] ?? name, seconds: 2)
+    }
+
+    @objc func heightUp() { height(2) }
+    @objc func heightDown() { height(-2) }
+    @objc func heightReset() { height(-settings.screenPitch) }
+
+    func height(_ delta: Double) {
+        settings.screenPitch = min(30, max(-30, settings.screenPitch + delta))
+        applyExtras()
+        renderer?.show(String(format: "Screen height %+.0f°", settings.screenPitch), seconds: 1)
+    }
+
+    /// Full-circle turn: face something, start, turn around once (or more), face it again, finish.
+    /// What the gyro says you turned vs. whole turns gives its sensitivity about the vertical axis.
+    @objc func calibrateYawScale() {
+        guard let start = yawScaleStart else {
+            yawScaleStart = imu.turned
+            NSSound(named: "Tink")?.play()
+            renderer?.show("Look at something you can find again. Turn around once (360°, either way), look at it again, then press ⌃⌥G", seconds: 15)
+            return
+        }
+        yawScaleStart = nil
+        let turned = abs(imu.turned - start)
+        let turns = (turned / (2 * .pi)).rounded()
+        guard turns >= 1, abs(turned - turns * 2 * .pi) < 20 * .pi / 180 else {
+            NSSound(named: "Basso")?.play()
+            renderer?.show(String(format: "That was %.0f° — not a whole turn. Nothing changed.", degrees(turned)), seconds: 5)
+            return
+        }
+        let factor = turns * 2 * .pi / turned
+        var s = imu.scale
+        s.y *= factor
+        imu.scale = s
+        settings.gyroScale = imu.scale
+        NSSound(named: "Glass")?.play()
+        renderer?.show(String(format: "Measured %.1f° for %.0f×360° — turn sensitivity ×%.4f", degrees(turned), turns, factor), seconds: 6)
+    }
+
+    @objc func resetScale() {
+        imu.scale = SIMD3(repeating: 1)
+        settings.gyroScale = imu.scale
+        renderer?.show("Gyro sensitivity reset", seconds: 2)
+    }
+
+    @objc func resetTemperature() {
+        imu.temperatureModel = TemperatureModel()
+        settings.temperatureModel = nil
+        renderer?.show("Temperature model cleared", seconds: 2)
+    }
+
+    /// Sends 0x3E, which the RayNeo SDK names "read gyro bias", and nothing that writes. The raw
+    /// reply shows as "last ack" in the developer overlay.
+    @objc func probeCalibration() {
+        imu.send(raw: 0x3E)
+        if !settings.developer { toggleDeveloper() }
+        renderer?.show("Sent read-only query 0x3E — the reply is under GLASSES IMU › last ack", seconds: 5)
+    }
+
+    @objc func toggleLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() }
+            renderer?.show(SMAppService.mainApp.status == .enabled ? "RayNeoPin opens at login" : "RayNeoPin won't open at login", seconds: 2)
+        } catch {
+            renderer?.show("Open at Login failed: \(error.localizedDescription)", seconds: 5)
+        }
     }
 
     /// Lists paired Apple headphones; picking one makes it the sound output, which is what
@@ -613,7 +1058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func setting(_ change: () -> Void, _ message: String) {
         change()
-        renderer?.update { settings.apply(to: &$0) }
+        applyExtras()
         renderer?.show(message)
     }
 

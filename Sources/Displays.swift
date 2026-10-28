@@ -70,6 +70,18 @@ enum Displays {
         }
         CGCompleteDisplayConfiguration(config, .forSession)
     }
+
+    /// Side screens sit level with the main pinned display, to its left and right, so the pointer
+    /// moves between them the way it looks in the glasses.
+    static func arrangeSides(of main: CGDirectDisplayID, left: CGDirectDisplayID?, right: CGDirectDisplayID?) {
+        guard left != nil || right != nil else { return }
+        let mb = CGDisplayBounds(main)
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        if let left { CGConfigureDisplayOrigin(config, left, Int32(mb.minX - CGDisplayBounds(left).width), Int32(mb.minY)) }
+        if let right { CGConfigureDisplayOrigin(config, right, Int32(mb.maxX), Int32(mb.minY)) }
+        CGCompleteDisplayConfiguration(config, .forSession)
+    }
 }
 
 /// An extra monitor that only exists in software (private CGVirtualDisplay API, as used by
@@ -122,15 +134,16 @@ final class VirtualMonitor {
     private let display: CGVirtualDisplay
     var displayID: CGDirectDisplayID { display.displayID }
 
-    init?() {
+    /// `index` 0 is the main pinned screen; 1 and 2 are side screens (left, right).
+    init?(name: String = "RayNeoPin Display", index: UInt32 = 0) {
         let d = CGVirtualDisplayDescriptor()
-        d.name = "RayNeoPin Display"
+        d.name = name
         d.maxPixelsWide = 3840
         d.maxPixelsHigh = 2160
         d.sizeInMillimeters = CGSize(width: 531, height: 299) // a 24" monitor, for macOS' default scaling
         d.vendorID = 0x524E // "RN"
-        d.productID = 0x0001
-        d.serialNum = 0x50494E31 // "PIN1"
+        d.productID = 0x0001 + index
+        d.serialNum = 0x50494E31 + index // "PIN1"
         d.setDispatchQueue(.main)
         d.terminationHandler = { _, _ in NSLog("RayNeoPin: virtual display terminated by WindowServer") }
         display = CGVirtualDisplay(descriptor: d)
@@ -209,7 +222,6 @@ enum WindowRescue {
 final class CursorFence {
     var blocked: CGDirectDisplayID?
     var hideOn: CGDirectDisplayID? { didSet { if hideOn == nil { setHidden(false) } } }
-    private var timer: Timer?
     private var hides = 0 // outstanding CGDisplayHideCursor calls
     private var lastHide = 0.0
 
@@ -217,8 +229,6 @@ final class CursorFence {
         // Background apps may only hide the cursor with this WindowServer property.
         let cid = _CGSDefaultConnection()
         CGSSetConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
-        timer = Timer.scheduledTimer(withTimeInterval: 1 / 120, repeats: true) { [weak self] _ in self?.check() }
-        RunLoop.main.add(timer!, forMode: .common)
     }
 
     func stop() { setHidden(false) }
@@ -237,7 +247,8 @@ final class CursorFence {
         }
     }
 
-    private func check() {
+    /// Called by the app at display rate (one timer for this and the drawn cursor).
+    func check() {
         guard let loc = CGEvent(source: nil)?.location else { return }
         if let hideOn { setHidden(CGDisplayBounds(hideOn).contains(loc)) }
         guard let blocked else { return }
