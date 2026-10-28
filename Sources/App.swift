@@ -8,6 +8,7 @@ import AppKit
 import Carbon.HIToolbox
 import ScreenCaptureKit
 import ServiceManagement
+import SwiftUI
 import simd
 
 // MARK: - Settings
@@ -68,7 +69,7 @@ final class Settings {
 
     /// Multiple-choice options, stored as strings.
     static let choiceDefaults: [String: String] = [
-        "sharpenStyle": SharpenStyle.unsharp.rawValue, // best in the render lab "smoothing": SmoothingMode.oneEuro.rawValue,
+        "sharpenStyle2": SharpenStyle.unsharp.rawValue, // best in the render lab (new key: resets earlier picks) "smoothing": SmoothingMode.oneEuro.rawValue,
         "pacing": FramePacing.metalLink.rawValue, "fusion": Fusion.Mode.complementary.rawValue,
         "warmth": "0", "brightness": "1", "yawGain": "1", "followDeadzone": "20", "predictionTrim": "0",
         "sideScreens": "off",
@@ -111,7 +112,7 @@ final class Settings {
         p.tracking = tracking
         p.developer = developer
         p.sharpness = sharpness
-        p.sharpenStyle = SharpenStyle(rawValue: choice("sharpenStyle")) ?? .unsharp
+        p.sharpenStyle = SharpenStyle(rawValue: choice("sharpenStyle2")) ?? .unsharp
         p.motionSharpen = flag("motionSharpen")
         p.smartFilter = flag("smartFilter")
         p.pixelLock = flag("pixelLock")
@@ -174,8 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var source: Source?
     var statusItem: NSStatusItem!
     let sourceMenu = NSMenu()
-    let resolutionMenu = NSMenu()
-    let sharpnessMenu = NSMenu()
     let trackingMenu = NSMenu()
     let airPodsMenu = NSMenu()
     var pairedHeadphones: [HeadphoneDevice] = []
@@ -186,10 +185,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var developerPanel: NSPanel?
     var developerLabel: NSTextField?
     // Test branch
-    let readabilityMenu = NSMenu()
-    let anchoringMenu = NSMenu()
-    let driftMenu = NSMenu()
-    let latencyMenu = NSMenu()
     /// Side screens beside the pinned one (Virtual Display setup), by side (−1 left, +1 right).
     var sideMonitors: [Int: VirtualMonitor] = [:]
     var sideCaptures: [Int: Capture] = [:]
@@ -629,43 +624,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         menu.addItem(item("Recenter  ⌃⌥R", #selector(recenter)))
-        menu.addItem(item("Calibrate Gyro (glasses on a table)…", #selector(calibrate)))
         menu.addItem(toggle("Pause Tracking  ⌃⌥T", #selector(togglePause)) { [weak self] in self?.renderer?.currentParams.paused == true })
+        let presets = NSMenu()
+        presets.addItem(item("Desk — fixed in space  ⌃⌥1", #selector(presetDesk)))
+        presets.addItem(item("Sofa — follows you, no tilt  ⌃⌥2", #selector(presetSofa)))
+        presets.addItem(item("Lying Down — follows you, level  ⌃⌥3", #selector(presetLying)))
+        menu.addItem(submenu("Preset", presets))
         menu.addItem(.separator())
-        menu.addItem(header("Lock an axis (it follows your head)"))
-        menu.addItem(toggle("Lock Yaw — left/right  ⌃⌥Y", #selector(toggleLockYaw)) { [weak self] in self?.settings.lockYaw == true })
-        menu.addItem(toggle("Lock Pitch — up/down  ⌃⌥P", #selector(toggleLockPitch)) { [weak self] in self?.settings.lockPitch == true })
-        menu.addItem(toggle("Lock Roll — tilt  ⌃⌥E", #selector(toggleLockRoll)) { [weak self] in self?.settings.lockRoll == true })
-        menu.addItem(.separator())
-        menu.addItem(header("Stability"))
-        menu.addItem(toggle("Steady Image (ignore heartbeat & micro-movements)", #selector(toggleSteady)) { [weak self] in self?.settings.steady == true })
+        menu.addItem(submenu("Source", sourceMenu))
         menu.addItem(submenu("Head Tracking Source", trackingMenu))
         menu.addItem(submenu("AirPods", airPodsMenu))
         menu.addItem(item("Recalibrate AirPods", #selector(recalibrateAirPods)))
-        menu.addItem(toggle("Auto Drift Correction (follows your gaze)", #selector(toggleAutoRecenter)) { [weak self] in self?.settings.autoRecenter == true })
+        menu.addItem(item("Calibrate Gyro (glasses on a table)…", #selector(calibrate)))
+        let zoomMenu = NSMenu()
+        zoomMenu.addItem(item("Zoom In  ⌃⌥I", #selector(zoomIn)))
+        zoomMenu.addItem(item("Zoom Out  ⌃⌥O", #selector(zoomOut)))
+        zoomMenu.addItem(item("Reset Zoom  ⌃⌥0", #selector(zoomReset)))
+        menu.addItem(submenu("Zoom", zoomMenu))
         menu.addItem(.separator())
-        menu.addItem(header("Test branch — try each, keep what helps"))
-        menu.addItem(submenu("Readability", readabilityMenu))
-        menu.addItem(submenu("Anchoring", anchoringMenu))
-        menu.addItem(submenu("Drift & Accuracy", driftMenu))
-        menu.addItem(submenu("Latency & CPU", latencyMenu))
-        menu.addItem(.separator())
-        menu.addItem(header("Display"))
-        menu.addItem(item("Zoom In  ⌃⌥I", #selector(zoomIn)))
-        menu.addItem(item("Zoom Out  ⌃⌥O", #selector(zoomOut)))
-        menu.addItem(item("Reset Zoom  ⌃⌥0", #selector(zoomReset)))
-        menu.addItem(submenu("Resolution", resolutionMenu))
-        menu.addItem(submenu("Sharpness", sharpnessMenu))
-        menu.addItem(submenu("Source", sourceMenu))
-        menu.addItem(toggle("Glasses at 120 Hz", #selector(toggleRefresh)) { [weak self] in self?.settings.highRefresh == true })
-        menu.addItem(item("FOV +1°  ⌃⌥L", #selector(fovUp)))
-        menu.addItem(item("FOV −1°  ⌃⌥K", #selector(fovDown)))
-        menu.addItem(.separator())
-        menu.addItem(toggle("Developer Mode (data in the glasses)  ⌃⌥D", #selector(toggleDeveloper)) { [weak self] in self?.settings.developer == true })
-        menu.addItem(toggle("Also Show Developer Data on the Mac", #selector(toggleDeveloperOnMac)) { [weak self] in self?.settings.developerOnMac == true })
-        menu.addItem(toggle("Open at Login", #selector(toggleLogin)) { SMAppService.mainApp.status == .enabled })
-        menu.addItem(item("☕ Buy Me a Coffee — help pay Claude's bill", #selector(coffee)))
+        let settingsItem = item("Settings…", #selector(showSettings))
+        settingsItem.keyEquivalent = ","
+        menu.addItem(settingsItem)
+        menu.addItem(toggle("Developer Mode  ⌃⌥D", #selector(toggleDeveloper)) { [weak self] in self?.settings.developer == true })
         menu.addItem(item("Check for Updates…", #selector(update)))
+        menu.addItem(item("☕ Buy Me a Coffee — help pay Claude's bill", #selector(coffee)))
         menu.addItem(item("Quit  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
         statusItem.menu = menu
     }
@@ -720,129 +702,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        resolutionMenu.removeAllItems()
-        if settings.sourceKind != "virtual" { resolutionMenu.addItem(header("Picking one switches to the Virtual Display setup")) }
-        for r in VirtualMonitor.Resolution.allCases {
-            if r == .fhd || r == .wuxga || r == .uw2560 || r == .manual { resolutionMenu.addItem(.separator()) }
-            let i = item(r.rawValue, #selector(pickResolution(_:)))
-            i.representedObject = "\(r)"
-            i.state = settings.resolution == r ? .on : .off
-            resolutionMenu.addItem(i)
-        }
-        sharpnessMenu.removeAllItems()
-        for (name, value) in [("Off", 0.0), ("Low", 0.3), ("Medium", 0.5), ("High", 0.8)] {
-            let i = item(name, #selector(pickSharpness(_:)))
-            i.representedObject = value
-            i.state = abs(settings.sharpness - value) < 0.01 ? .on : .off
-            sharpnessMenu.addItem(i)
-        }
-        rebuildTestMenus()
         Task { @MainActor in await refreshSources() }
     }
 
     // MARK: Test-branch menus
 
-    /// A checkmark item bound to a Settings flag.
-    func flagItem(_ title: String, _ key: String) -> NSMenuItem {
-        let i = item(title, #selector(pickFlag(_:)))
-        i.representedObject = [key, title]
-        i.state = settings.flag(key) ? .on : .off
-        return i
-    }
-
-    /// A submenu of exclusive choices bound to a Settings choice.
-    func choiceMenu(_ title: String, _ key: String, _ options: [(String, String)]) -> NSMenuItem {
-        let menu = NSMenu()
-        for (name, value) in options {
-            let i = item(name, #selector(pickChoice(_:)))
-            i.representedObject = [key, value, name]
-            i.state = settings.choice(key) == value ? .on : .off
-            menu.addItem(i)
-        }
-        return submenu(title, menu)
-    }
-
-    func rebuildTestMenus() {
-        let r = readabilityMenu
-        r.removeAllItems()
-        r.addItem(choiceMenu("Sharpening Style", "sharpenStyle", SharpenStyle.allCases.map { ($0.title, $0.rawValue) }))
-        r.addItem(flagItem("Sharpen Only When Still (no crawling text while turning)", "motionSharpen"))
-        r.addItem(flagItem("Smart Sampling (bicubic when enlarged, 4× when shrunk)", "smartFilter"))
-        r.addItem(flagItem("Pixel Lock When Still (exact 1:1 pixels near 100% scale)", "pixelLock"))
-        r.addItem(flagItem("Curved Ultrawide Screen", "curved"))
-        r.addItem(flagItem("Resize Text Like macOS (gamma space — no glow/halo)", "gammaResample"))
-        r.addItem(item("Use Crisp Retina (text drawn at 2×, Virtual Display)", #selector(useCrispRetina)))
-        r.addItem(.separator())
-        r.addItem(header("Eye comfort"))
-        r.addItem(choiceMenu("Warmth", "warmth", [("Off", "0"), ("Low", "0.3"), ("Medium", "0.6"), ("High", "1")]))
-        r.addItem(choiceMenu("Brightness", "brightness", [("100%", "1"), ("85%", "0.85"), ("70%", "0.7"), ("50%", "0.5"), ("35%", "0.35")]))
-
-        let a = anchoringMenu
-        a.removeAllItems()
-        a.addItem(header("Presets"))
-        a.addItem(item("Desk — screen fixed in space  ⌃⌥1", #selector(presetDesk)))
-        a.addItem(item("Sofa — follows you, no tilt  ⌃⌥2", #selector(presetSofa)))
-        a.addItem(item("Lying Down — follows you, level, any height  ⌃⌥3", #selector(presetLying)))
-        a.addItem(.separator())
-        a.addItem(flagItem("Smooth Follow (screen glides back in front of you)  ⌃⌥F", "follow"))
-        a.addItem(choiceMenu("Follow Dead Zone", "followDeadzone", [("10°", "10"), ("20°", "20"), ("30°", "30"), ("45°", "45")]))
-        a.addItem(flagItem("Recenter After Looking Away for a While", "lookAwayRecenter"))
-        a.addItem(flagItem("Double-Tap the Glasses to Recenter", "doubleTap"))
-        a.addItem(choiceMenu("Neck Saver (turn less, see more)", "yawGain", [("Off", "1"), ("1.25×", "1.25"), ("1.5×", "1.5"), ("2×", "2")]))
-        a.addItem(item("Raise Screen  ⌃⌥↑", #selector(heightUp)))
-        a.addItem(item("Lower Screen  ⌃⌥↓", #selector(heightDown)))
-        a.addItem(item(String(format: "Reset Screen Height (now %+.0f°)", settings.screenPitch), #selector(heightReset)))
-        a.addItem(choiceMenu("Side Screens (Virtual Display setup)", "sideScreens",
-                             [("Off", "off"), ("One on the Left", "left"), ("One on the Right", "right"), ("Both Sides", "both")]))
-
-        let d = driftMenu
-        d.removeAllItems()
-        d.addItem(choiceMenu("Sensor Fusion", "fusion", [("Complementary (current)", Fusion.Mode.complementary.rawValue),
-                                                         ("Kalman with bias state (experimental)", Fusion.Mode.kalman.rawValue)]))
-        d.addItem(flagItem("Strict Gravity Rejection While Accelerating", "strictAccel"))
-        d.addItem(flagItem("Temperature Compensation (learns bias vs. °C)", "temperatureComp"))
-        d.addItem(flagItem("Learn Glasses Gyro Bias from AirPods", "airPodsBias"))
-        d.addItem(flagItem("Learn Glasses Gyro Sensitivity from AirPods", "airPodsScale"))
-        d.addItem(item(yawScaleStart == nil ? "Calibrate Turn Sensitivity (turn a full circle)…  ⌃⌥G"
-                       : "Finish Turn Calibration (facing the start again)  ⌃⌥G", #selector(calibrateYawScale)))
-        let sc = imu.scale
-        d.addItem(item(String(format: "Reset Gyro Sensitivity (now %.4f %.4f %.4f)", sc.x, sc.y, sc.z), #selector(resetScale)))
-        d.addItem(item("Forget Temperature Model", #selector(resetTemperature)))
-        d.addItem(.separator())
-        d.addItem(header("Crazy ideas"))
-        d.addItem(flagItem("Mac Camera as Drift Reference (sees your face)", "cameraDrift"))
-        d.addItem(flagItem("Typing Hint (you look at the caret while typing)", "typingDrift"))
-        d.addItem(item("Probe Glasses Calibration (read-only, see Developer Mode)", #selector(probeCalibration)))
-
-        let l = latencyMenu
-        l.removeAllItems()
-        l.addItem(choiceMenu("Smoothing", "smoothing", SmoothingMode.allCases.map { ($0.title, $0.rawValue) }))
-        l.addItem(flagItem("Predict from the Filtered Pose (less jitter)", "predictFiltered"))
-        l.addItem(choiceMenu("Frame Pacing", "pacing", FramePacing.allCases.map { ($0.title, $0.rawValue) }))
-        l.addItem(choiceMenu("Prediction Trim", "predictionTrim",
-                             [("−8 ms", "-8"), ("−4 ms", "-4"), ("0 (default)", "0"), ("+4 ms", "4"), ("+8 ms", "8"), ("+12 ms", "12")]))
-        l.addItem(.separator())
-        l.addItem(flagItem("Skip Frames When Nothing Changes (saves CPU/GPU)", "skipIdle"))
-        l.addItem(flagItem("Metal Performance HUD in the Glasses", "metalHUD"))
-    }
-
-    @objc func pickFlag(_ sender: NSMenuItem) {
-        guard let rep = sender.representedObject as? [String], rep.count == 2 else { return }
-        flip(rep[0], rep[1])
-    }
-
     func flip(_ key: String, _ title: String) {
-        settings.setFlag(key, !settings.flag(key))
-        let on = settings.flag(key)
+        setFlag(key, !settings.flag(key))
+        renderer?.show("\(title): \(settings.flag(key) ? "on" : "off")", seconds: 2)
+    }
+
+    func setFlag(_ key: String, _ on: Bool) {
+        guard on != settings.flag(key) else { return }
+        settings.setFlag(key, on)
         if key == "follow" || key == "lookAwayRecenter" { renderer?.recenter() }
         applyExtras()
         if key == "gammaResample" { rebuildRenderer() }
-        renderer?.show("\(title): \(on ? "on" : "off")", seconds: 2)
     }
 
-    @objc func pickChoice(_ sender: NSMenuItem) {
-        guard let rep = sender.representedObject as? [String], rep.count == 3 else { return }
-        let (key, value, name) = (rep[0], rep[1], rep[2])
+    func setChoice(_ key: String, _ value: String) {
         let old = settings.choice(key)
         settings.setChoice(key, value)
         applyExtras()
@@ -855,7 +733,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 applySideScreens()
             }
         }
-        renderer?.show(name, seconds: 2)
     }
 
     /// Pushes every setting to the renderer, the sensor fusion and the optional references.
@@ -884,6 +761,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer = nil
         screensChanged()
     }
+
+    var settingsWindow: NSWindow?
+
+    @objc func showSettings() {
+        if settingsWindow == nil {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: SettingsModel(self))))
+            w.title = "RayNeoPin Settings"
+            w.styleMask = [.titled, .closable, .miniaturizable]
+            w.isReleasedWhenClosed = false
+            settingsWindow = w
+            // On the Mac's own screen: the glasses may only show a captured image of their desktop.
+            if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main {
+                let f = screen.visibleFrame, size = w.frame.size
+                w.setFrameOrigin(NSPoint(x: f.midX - size.width / 2, y: f.midY - size.height / 2))
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func setHighRefresh(_ on: Bool) { if on != settings.highRefresh { toggleRefresh() } }
+    func setZoom(_ z: Double) { zoom(z / settings.zoom) }
+    func setDeveloper(_ on: Bool) { if on != settings.developer { toggleDeveloper() } }
+    func setDeveloperOnMac(_ on: Bool) { if on != settings.developerOnMac { toggleDeveloperOnMac() } }
 
     @objc func useCrispRetina() {
         settings.resolution = .crispRetina
@@ -1049,9 +950,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.recenter()
     }
 
-    @objc func pickResolution(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String,
-              let r = VirtualMonitor.Resolution.allCases.first(where: { "\($0)" == raw }) else { return }
+    /// The display setups the Settings window offers (mirroring stays in the menu).
+    func chooseSetup(_ kind: String) {
+        guard kind != settings.sourceKind else { return }
+        settings.sourceKind = kind
+        applySetup()
+        if let source { Task { await capture.start(source) } }
+        renderer?.recenter()
+    }
+
+    func chooseResolution(_ r: VirtualMonitor.Resolution) {
         settings.resolution = r
         if settings.sourceKind != "virtual" {
             settings.sourceKind = "virtual" // these sizes only exist on the virtual display
@@ -1060,12 +968,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             applyResolution()
         }
         renderer?.show(r == .manual ? "Resolution: pick it in System Settings › Displays › RayNeoPin Display" : "Resolution: \(r.rawValue)", seconds: 3)
-    }
-
-    @objc func pickSharpness(_ sender: NSMenuItem) {
-        guard let v = sender.representedObject as? Double else { return }
-        settings.sharpness = v
-        renderer?.update { $0.sharpness = v }
     }
 
     // MARK: Actions
@@ -1174,6 +1076,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func pickTracking(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let mode = TrackingMode(rawValue: raw) else { return }
+        chooseTracking(mode)
+    }
+
+    func chooseTracking(_ mode: TrackingMode) {
+        guard mode != settings.tracking else { return }
         let hint = mode == .glasses ? "" : " — turn your head left and right a couple of times"
         setting({ settings.tracking = mode }, "Head tracking: \(mode.title)\(hint)")
         if mode == .glasses { headphones.stop() } else { headphones.start() }
@@ -1320,8 +1227,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // If there is a new version the script quits and relaunches this app; otherwise it just exits.
         p.terminationHandler = { [weak self] p in
             DispatchQueue.main.async {
-                self?.renderer?.show(p.terminationStatus == 0 ? "You have the latest version"
-                                     : "Update failed (see ~/Library/Logs/RayNeoPin-update.log)", seconds: 5)
+                // The script's last line says what it checked, e.g. "up to date (61775b3, test/everything)".
+                let last = (try? String(contentsOf: logURL, encoding: .utf8))?
+                    .split(separator: "\n").last.map(String.init) ?? ""
+                self?.renderer?.show(p.terminationStatus == 0 ? (last.isEmpty ? "You have the latest version" : last)
+                                     : "Update failed (see ~/Library/Logs/RayNeoPin-update.log)", seconds: 6)
             }
         }
         try? p.run()

@@ -40,7 +40,7 @@ main() {
   NEW=$(git -C "$SRC" rev-parse --short HEAD)
   OLD=$(cat "$DEST/Contents/Resources/revision" 2>/dev/null || echo none)
   if [[ $FORCE == 0 && "$NEW" == "$OLD" ]]; then
-    echo "RayNeoPin is up to date ($NEW)."
+    echo "RayNeoPin is up to date ($NEW, $BRANCH)."
     exit 0
   fi
 

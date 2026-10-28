@@ -145,5 +145,46 @@ do {
     check(lagMax < 2 * deg && q.vector.x.isFinite, String(format: "1€ lag during a 86 °/s turn: %.2f°", lagMax / deg))
 }
 
+// 7. AirPods calibration: tilted in the ears, 60 ms Bluetooth delay, noisy. Must finish within
+//    seconds of head movement (not sit at 95%) and then match the glasses.
+do {
+    var history = PoseHistory(capacity: 2600)
+    var cal = AirPodsCalibration()
+    let X = simd_quatd(angle: 0.5, axis: simd_normalize(SIMD3(1, 0.3, 0.2))) // glasses → AirPods body
+    let W = simd_quatd(angle: 1.2, axis: SIMD3(0, 1, 0)) // AirPods world → glasses world
+    let lagTrue = 0.06
+    var qg = simd_quatd.identity
+    var t = 0.0
+    var pending: [Headphones.Sample] = []
+    var readyAt: Double?
+    let motion: (Double) -> SIMD3<Double> = { t in SIMD3(0.9 * sin(2.1 * t), 1.6 * sin(1.3 * t + 0.4), 0.3 * sin(1.7 * t)) }
+    var nextAirPods = 0.0
+    while t < 40, readyAt == nil {
+        let w = motion(t)
+        qg = simd_normalize(qg.extrapolated(w, 0.002))
+        history.append(PoseSample(time: t, q: qg, omega: w))
+        if t >= nextAirPods {
+            nextAirPods += 0.04 // 25 Hz
+            let noise = SIMD3(Double.random(in: -0.03...0.03), Double.random(in: -0.03...0.03), Double.random(in: -0.03...0.03))
+            let bodyToWorld = W.inverse * qg * X.inverse
+            pending.append(Headphones.Sample(q: bodyToWorld, rate: X.act(w) + noise, angles: .zero, time: t - lagTrue, arrival: t))
+        }
+        if pending.count >= 3 { // Bluetooth delivers in bursts
+            let h = history
+            cal.ingest(pending, glasses: { h.pose(at: $0) })
+            pending.removeAll()
+            if cal.ready { readyAt = t }
+        }
+        t += 0.002
+    }
+    check(readyAt.map { $0 < 12 } == true, String(format: "AirPods calibration finished after %.1f s of movement (lag %.0f ms, fit %.0f%%, restarts %d)",
+                                                    readyAt ?? -1, cal.lag * 1000, cal.fitError * 100, cal.restarts))
+    if readyAt != nil {
+        let s = Headphones.Sample(q: W.inverse * qg * X.inverse, rate: .zero, angles: .zero, time: t, arrival: t)
+        let err = cal.pose(s).map { shortestAngle($0, qg) } ?? .pi
+        check(err < 2 * deg, String(format: "AirPods pose matches the glasses within %.2f°", err / deg))
+    }
+}
+
 print(failures == 0 ? "All tests passed" : "\(failures) test(s) failed")
 exit(failures == 0 ? 0 : 1)

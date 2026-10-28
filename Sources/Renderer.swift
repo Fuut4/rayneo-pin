@@ -837,7 +837,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         if calibrating {
             let filled = Int((calibration.progress * 20).rounded())
             let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
-            let hint = CACurrentMediaTime() - calibration.lastPairTime > 1.5
+            let hint = calibration.fitting ? "almost — keep moving, smoothly (not jerky)"
+                : CACurrentMediaTime() - calibration.lastPairTime > 1.5
                 ? "turn your head left/right and nod — a bit faster" : "keep turning and nodding"
             airPodsNote = "Calibrating AirPods  \(bar)  \(Int(calibration.progress * 100))%  — \(hint)"
         } else {
@@ -1181,9 +1182,9 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                      devAirPodsDelay * 1000, headphones.usesSensorClock ? "sensor" : "arrival") : ""))
         if let a = airpods {
             lines.append("  raw °       " + ypr(a.angles) + "   rate " + v(a.rate))
-            lines.append(String(format: "  calibration lag %+.0f ms (r %.2f) · quaternion %@ · pairs %d · fit error %.0f%% · jumps %d%@",
+            lines.append(String(format: "  calibration lag %+.0f ms (r %.2f) · quaternion %@ · pairs %d · fit error %.0f%% · jumps %d · restarts %d%@",
                                 calibration.lag * 1000, calibration.lagCorrelation, calibration.inverted ? "world→body" : "body→world",
-                                calibration.pairCount, calibration.fitError * 100, calibration.jumps,
+                                calibration.pairCount, calibration.fitError * 100, calibration.jumps, calibration.restarts,
                                 calibration.seeded ? " · from last session" : ""))
             lines.append("  ears→glasses " + (calibration.X.map { ypr($0.ypr) } ?? "unknown")
                          + "   world " + (calibration.W.map { ypr($0.ypr) } ?? "unknown"))

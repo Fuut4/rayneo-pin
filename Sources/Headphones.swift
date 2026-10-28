@@ -208,8 +208,19 @@ struct AirPodsCalibration {
 
     var ready: Bool { X != nil && W != nil && fitError < 0.4 && pairCount >= AirPodsCalibration.neededPairs }
 
-    /// 0…1 for the calibration progress bar.
-    var progress: Double { ready ? 1 : min(Double(pairs.count) / Double(AirPodsCalibration.neededPairs), 0.95) }
+    /// 0…1 for the calibration progress bar: the first 80% is collecting movement, the rest is how
+    /// well it fits (so it keeps moving instead of sitting at 95% while the fit is still poor).
+    var progress: Double {
+        if ready { return 1 }
+        let collected = min(Double(pairs.count) / Double(AirPodsCalibration.neededPairs), 1)
+        guard collected >= 1 else { return 0.8 * collected }
+        return 0.8 + 0.19 * min(max((0.8 - fitError) / 0.4, 0), 1)
+    }
+
+    /// Enough movement collected but the fit isn't good yet (moving too fast/jerky, or AirPods loose).
+    var fitting: Bool { !ready && pairs.count >= AirPodsCalibration.neededPairs }
+    private var poorSolves = 0
+    private(set) var restarts = 0
 
     mutating func reset() { self = AirPodsCalibration() }
 
@@ -270,7 +281,7 @@ struct AirPodsCalibration {
             if speed > 0.25, simd_length(g.omega) > 0.25, agrees || !gate {
                 pairs.append((g.omega, s.rate))
                 lastPairTime = s.arrival
-                if pairs.count > 3000 { pairs.removeFirst(pairs.count - 3000) }
+                if pairs.count > 1200 { pairs.removeFirst(pairs.count - 1200) } // ~20 s of turning: bad early data ages out
                 newPairs += 1
             }
             // Refinements never make the calibration drop out: the old W stays until replaced.
@@ -288,10 +299,22 @@ struct AirPodsCalibration {
             newPairs = 0
             pairCount = pairs.count
             // A seeded X is only replaced once there is as much fresh data as it was built from.
-            if !seeded || pairs.count >= AirPodsCalibration.neededPairs, let x = solveRotation(pairs) {
-                let rms = sqrt(pairs.reduce(0) { $0 + simd_length_squared($1.b - x.act($1.a)) } / Double(pairs.count))
-                let mean = pairs.reduce(0) { $0 + simd_length($1.b) } / Double(pairs.count)
+            if !seeded || pairs.count >= AirPodsCalibration.neededPairs, let first = solveRotation(pairs) {
+                // Robust refit: drop the worst 20% (glitches, a bud moving in the ear) and solve again.
+                let ranked = pairs.sorted { simd_length_squared($0.b - first.act($0.a)) < simd_length_squared($1.b - first.act($1.a)) }
+                let kept = Array(ranked.prefix(max(3, pairs.count * 4 / 5)))
+                let x = solveRotation(kept) ?? first
+                let rms = sqrt(kept.reduce(0) { $0 + simd_length_squared($1.b - x.act($1.a)) } / Double(kept.count))
+                let mean = kept.reduce(0) { $0 + simd_length($1.b) } / Double(kept.count)
                 fitError = rms / max(mean, 1e-6)
+                // Still poor after ~10 s of extra movement: the early data is bad (e.g. collected before
+                // the Bluetooth delay was known). Start collecting again rather than stay stuck.
+                if pairs.count >= AirPodsCalibration.neededPairs, fitError >= 0.4, X == nil || W == nil {
+                    poorSolves += 1
+                    if poorSolves >= 15 { pairs.removeAll(); poorSolves = 0; restarts += 1 }
+                } else {
+                    poorSolves = 0
+                }
                 if X == nil || fitError < 0.4 { X = x }
                 if fitError < 0.4 { gate = true }
                 // W depends on X: redo it while X is still improving.
@@ -321,7 +344,13 @@ struct AirPodsCalibration {
             let r = pearson(xs, ys)
             if r > best.r { best = (L, r) }
         }
-        if best.r > 0.6 { lag = best.lag; lagCorrelation = best.r }
+        if best.r > 0.6 {
+            // Pairs matched with a delay that was off by more than ~1.5 frames don't describe the same
+            // instant at all: drop them while still calibrating.
+            if abs(best.lag - lag) > 0.012, !ready, !seeded { pairs.removeAll(); newPairs = 0 }
+            lag = best.lag
+            lagCorrelation = best.r
+        }
     }
 }
 

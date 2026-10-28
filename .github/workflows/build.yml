@@ -37,6 +37,7 @@ jobs:
       - name: Publish lab results to the lab-results branch
         if: github.event_name == 'push'
         run: |
+          cp results.txt lab/tests.txt
           cd lab
           git init -q -b lab-results
           git config user.name "render lab"
