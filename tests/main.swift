@@ -108,7 +108,7 @@ do {
     var hits = 0
     var t = 0.0
     for i in 0..<1000 {
-        let tap = i == 250 || i == 400 // 1.0 s and 1.6 s... too far apart? no: 0.5 s and 0.8 s
+        let tap = i == 250 || i == 400 // at 0.5 s and 0.8 s
         let gyro = tap ? SIMD3(0.6, 0.2, 0) : .zero
         let acc = tap ? g + SIMD3(0, 0, 5) : g
         if d.update(gyro: gyro, acc: acc, time: t) { hits += 1 }
