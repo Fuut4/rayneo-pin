@@ -189,6 +189,9 @@ struct AirPodsCalibration {
     private var newSamples = 0
     private var poorSolves = 0
     private var xAtW: simd_quatd? // the X that W was computed with
+    private var relearning = false // after a reseat: keep the old result until the new one is ready
+    private var peak = 0.0 // the progress bar only moves forward
+    private(set) var glitches = 0 // samples skipped because their speed didn't match the glasses
     private(set) var seeded = false // X/convention/lag came from a previous session
 
     /// What's worth keeping between sessions for the same AirPods (W depends on the session).
@@ -225,8 +228,9 @@ struct AirPodsCalibration {
 
     /// 0…1 for the progress bar: collecting movement in both directions, then the fit quality (so it
     /// keeps moving instead of sitting at 95% while the fit is still poor).
-    var progress: Double {
-        if ready { return 1 }
+    var progress: Double { ready ? 1 : peak }
+
+    private var rawProgress: Double {
         let collected = min(Double(pairCount) / Double(AirPodsCalibration.neededPairs), turned, nodded, 1)
         guard collected >= 1 else { return 0.8 * collected }
         return 0.8 + 0.19 * min(max((0.8 - fitError) / 0.4, 0), 1)
@@ -284,18 +288,20 @@ struct AirPodsCalibration {
             guard let g = glasses(glassesTime(s)) else { continue }
             // Once X is known both devices must agree. A single disagreement is a glitch; most recent
             // ones disagreeing means the AirPods were reseated in the ears: X changed, learn it again.
-            let agrees = X.map { simd_length(s.rate - $0.act(g.omega)) < max(0.35, 0.5 * simd_length(g.omega)) } ?? true
-            if speed > 0.25, simd_length(g.omega) > 0.25, X != nil, gate {
+            // Only checked against a finished calibration: an early, rough X would make good samples
+            // look wrong (that used to throw the progress back to 0 again and again).
+            let agrees = !ready || X.map { simd_length(s.rate - $0.act(g.omega)) < max(0.35, 0.5 * simd_length(g.omega)) } ?? true
+            if speed > 0.25, simd_length(g.omega) > 0.25, ready, gate {
                 recentAgreement.append(agrees)
                 if recentAgreement.count > 25 { recentAgreement.removeFirst() }
                 if recentAgreement.count == 25, recentAgreement.filter({ !$0 }).count > 15 {
+                    // Keep using the old result until the new one is solved from fresh movement.
                     moving.removeAll()
                     recentAgreement.removeAll()
                     newSamples = 0
                     gate = false
                     seeded = false
-                    turned = 0
-                    nodded = 0
+                    relearning = true
                     reseats += 1
                 }
             }
@@ -324,7 +330,12 @@ struct AirPodsCalibration {
     private func pairs(_ L: Double, _ from: ArraySlice<(t: Double, rate: SIMD3<Double>)>,
                        _ glasses: (Double) -> PoseSample?) -> [(a: SIMD3<Double>, b: SIMD3<Double>)] {
         from.compactMap { m in
-            guard let g = glasses(m.t + L), simd_length(g.omega) > 0.25 else { return nil }
+            guard let g = glasses(m.t + L) else { return nil }
+            let gs = simd_length(g.omega), a = simd_length(m.rate)
+            // Rotating a vector never changes its length: the AirPods must turn as fast as the glasses,
+            // whatever their tilt in the ears. A sample that doesn't is a glitch (a bud moving, a
+            // Bluetooth hiccup) and is skipped, from the very first sample.
+            guard gs > 0.25, abs(a - gs) < max(0.3, 0.35 * gs) else { return nil }
             return (g.omega, m.rate)
         }
     }
@@ -359,6 +370,10 @@ struct AirPodsCalibration {
         }
 
         let all = pairs(lag, moving[...], glasses)
+        glitches = moving.count - all.count
+        // After a reseat the previous result keeps working until there's enough new movement.
+        if relearning, all.count < AirPodsCalibration.neededPairs { return }
+        relearning = false
         pairCount = all.count
         turned = min(all.reduce(0) { $0 + abs($1.a.y) } / AirPodsCalibration.neededSweep, 1)
         nodded = min(all.reduce(0) { $0 + abs($1.a.x) } / AirPodsCalibration.neededSweep, 1)
@@ -369,7 +384,8 @@ struct AirPodsCalibration {
         // Still poor after ~10 s of extra movement: start collecting again rather than stay stuck.
         if all.count >= AirPodsCalibration.neededPairs, fitError >= 0.4, X == nil || W == nil {
             poorSolves += 1
-            if poorSolves >= 15 { moving.removeAll(); poorSolves = 0; restarts += 1; turned = 0; nodded = 0 }
+            // Drop the older half, never everything, so the bar doesn't start over.
+            if poorSolves >= 15 { moving.removeFirst(moving.count / 2); poorSolves = 0; restarts += 1 }
         } else {
             poorSolves = 0
         }
@@ -378,6 +394,7 @@ struct AirPodsCalibration {
         // W depends on X: redo it while X is still improving.
         if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
            2 * .pi - (old.inverse * X).angle > 0.005 { wStale = true }
+        peak = max(peak, min(rawProgress, 0.99))
     }
 }
 

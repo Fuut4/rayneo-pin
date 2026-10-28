@@ -159,6 +159,7 @@ do {
     var readyAt: Double?
     let motion: (Double) -> SIMD3<Double> = { t in SIMD3(0.9 * sin(2.1 * t), 1.6 * sin(1.3 * t + 0.4), 0.3 * sin(1.7 * t)) }
     var nextAirPods = 0.0
+    var lastProgress = 0.0, progressDropped = false
     while t < 40, readyAt == nil {
         let w = motion(t)
         qg = simd_normalize(qg.extrapolated(w, 0.002))
@@ -167,18 +168,23 @@ do {
             nextAirPods += 0.04 // 25 Hz
             let noise = SIMD3(Double.random(in: -0.03...0.03), Double.random(in: -0.03...0.03), Double.random(in: -0.03...0.03))
             let bodyToWorld = W.inverse * qg * X.inverse
-            pending.append(Headphones.Sample(q: bodyToWorld, rate: X.act(w) + noise, angles: .zero, time: t - lagTrue, arrival: t))
+            // 1 in 8 samples is a glitch (a bud shifting in the ear, a Bluetooth hiccup).
+            let glitch = Int.random(in: 0..<8) == 0 ? SIMD3(Double.random(in: -3...3), Double.random(in: -3...3), 0) : .zero
+            pending.append(Headphones.Sample(q: bodyToWorld, rate: X.act(w) + noise + glitch, angles: .zero, time: t - lagTrue, arrival: t))
         }
         if pending.count >= 3 { // Bluetooth delivers in bursts
             let h = history
             cal.ingest(pending, glasses: { h.pose(at: $0) })
             pending.removeAll()
+            if cal.progress < lastProgress { progressDropped = true }
+            lastProgress = cal.progress
             if cal.ready { readyAt = t }
         }
         t += 0.002
     }
-    check(readyAt.map { $0 < 12 } == true, String(format: "AirPods calibration finished after %.1f s of movement (lag %.0f ms, fit %.0f%%, restarts %d)",
-                                                    readyAt ?? -1, cal.lag * 1000, cal.fitError * 100, cal.restarts))
+    check(readyAt.map { $0 < 12 } == true, String(format: "AirPods calibration, 1 in 8 samples glitched, finished after %.1f s of movement (lag %.0f ms, fit %.0f%%, glitches skipped %d)",
+                                                    readyAt ?? -1, cal.lag * 1000, cal.fitError * 100, cal.glitches))
+    check(!progressDropped, "AirPods progress bar never went backwards")
     if readyAt != nil {
         let s = Headphones.Sample(q: W.inverse * qg * X.inverse, rate: .zero, angles: .zero, time: t, arrival: t)
         let err = cal.pose(s).map { shortestAngle($0, qg) } ?? .pi

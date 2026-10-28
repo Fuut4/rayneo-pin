@@ -1181,9 +1181,9 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                      devAirPodsDelay * 1000, headphones.usesSensorClock ? "sensor" : "arrival") : ""))
         if let a = airpods {
             lines.append("  raw °       " + ypr(a.angles) + "   rate " + v(a.rate))
-            lines.append(String(format: "  calibration lag %+.0f ms (agreement %.2f) · turned %.0f%% nodded %.0f%% · quaternion %@ · pairs %d · fit error %.0f%% · jumps %d · restarts %d%@",
+            lines.append(String(format: "  calibration lag %+.0f ms (agreement %.2f) · turned %.0f%% nodded %.0f%% · quaternion %@ · pairs %d · fit error %.0f%% · jumps %d · restarts %d · glitches skipped %d%@",
                                 calibration.lag * 1000, calibration.lagCorrelation, calibration.turned * 100, calibration.nodded * 100, calibration.inverted ? "world→body" : "body→world",
-                                calibration.pairCount, calibration.fitError * 100, calibration.jumps, calibration.restarts,
+                                calibration.pairCount, calibration.fitError * 100, calibration.jumps, calibration.restarts, calibration.glitches,
                                 calibration.seeded ? " · from last session" : ""))
             lines.append("  ears→glasses " + (calibration.X.map { ypr($0.ypr) } ?? "unknown")
                          + "   world " + (calibration.W.map { ypr($0.ypr) } ?? "unknown"))
