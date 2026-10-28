@@ -216,6 +216,7 @@ enum Source: Equatable {
 final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     var onFrame: ((IOSurface, CGSize) -> Void)?
     var onError: ((String) -> Void)?
+    var onStarted: (() -> Void)?
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "capture", qos: .userInteractive)
 
@@ -254,6 +255,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
             try await stream.startCapture()
             self.stream = stream
+            DispatchQueue.main.async { self.onStarted?() }
         } catch {
             onError?("Captura: \(error.localizedDescription)")
         }
@@ -295,6 +297,8 @@ final class Renderer: NSObject {
     private var wasCalibrated = false
     private var aspect = 16.0 / 9.0
     private var hudUntil = Date.distantPast
+    /// Shown until cleared, e.g. a missing permission.
+    var notice: String?
     var paused = false { didSet { if !paused { needsRecenter = true } } }
 
     init(screen: NSScreen, imu: IMU, settings: Settings) {
@@ -385,8 +389,8 @@ final class Renderer: NSObject {
         defer { CATransaction.commit() }
 
         if Date() > hudUntil {
-            hud.string = !s.connected ? "Gafas no detectadas (USB)"
-                : !s.calibrated ? "Calibrando… no muevas la cabeza (\(Int(s.progress * 100))%)" : ""
+            hud.string = notice ?? (!s.connected ? "Gafas no detectadas (USB)"
+                : !s.calibrated ? "Calibrando… no muevas la cabeza (\(Int(s.progress * 100))%)" : "")
         }
         guard s.connected, s.calibrated, !paused else {
             screenLayer.transform = CATransform3DIdentity
@@ -479,13 +483,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
                                                object: nil, queue: .main) { [weak self] _ in self?.setUpRenderer() }
         capture.onFrame = { [weak self] surface, size in self?.renderer?.setFrame(surface, size: size) }
-        capture.onError = { [weak self] msg in self?.renderer?.show(msg, seconds: 8); NSLog("%@", msg) }
+        capture.onError = { [weak self] msg in
+            NSLog("%@", msg)
+            if CGPreflightScreenCaptureAccess() { self?.renderer?.show(msg, seconds: 8) } else { self?.permissionMissing() }
+        }
+        capture.onStarted = { [weak self] in
+            self?.renderer?.notice = nil
+            self?.retryTimer?.invalidate()
+            self?.retryTimer = nil
+        }
 
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         setUpRenderer()
     }
 
     func applicationWillTerminate(_ note: Notification) { imu.stop() }
+
+    var retryTimer: Timer?
+    var openedSettings = false
+
+    /// Without Screen Recording permission the glasses would stay black; say so on them and keep retrying.
+    func permissionMissing() {
+        renderer?.notice = "Falta permiso: Ajustes › Privacidad y seguridad › Grabación de pantalla › activá RayNeoPin"
+        if !openedSettings {
+            openedSettings = true
+            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        }
+        if retryTimer == nil {
+            retryTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                Task { await self.capture.start(self.source) }
+            }
+        }
+    }
+
+    /// Pulls the latest source, rebuilds, reinstalls and relaunches (see install.sh).
+    @objc func update() {
+        let script = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/RayNeoPin/src/install.sh").path
+        guard FileManager.default.fileExists(atPath: script) else {
+            renderer?.show("Instalá con install.sh para poder actualizar desde el menú", seconds: 5)
+            return
+        }
+        renderer?.show("Buscando actualización…", seconds: 60)
+        let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayNeoPin-update.log")
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = [script]
+        p.standardOutput = try? FileHandle(forWritingTo: logURL)
+        p.standardError = p.standardOutput
+        // If there is a new version the script quits and relaunches this app; otherwise it just exits.
+        p.terminationHandler = { [weak self] p in
+            DispatchQueue.main.async {
+                self?.renderer?.show(p.terminationStatus == 0 ? "Ya tenés la última versión"
+                                     : "Error al actualizar (ver ~/Library/Logs/RayNeoPin-update.log)", seconds: 5)
+            }
+        }
+        try? p.run()
+    }
 
     static func glassesScreen() -> NSScreen? {
         NSScreen.screens.first {
@@ -538,6 +594,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         src.submenu = sourceMenu
         menu.addItem(src)
         menu.addItem(.separator())
+        menu.addItem(item("Buscar actualización…", #selector(update)))
         menu.addItem(item("Salir  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
         statusItem.menu = menu
     }

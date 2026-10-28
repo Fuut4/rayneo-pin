@@ -22,17 +22,20 @@ RayNeo doesn't ship head tracking for the Air 4 Pro on Mac. The glasses do have 
 - RayNeo Air 4 Pro (USB `1bbb:af50`). Other RayNeo Air models that use the same protocol may work. Reports are welcome.
 - Xcode Command Line Tools (`xcode-select --install`) to build.
 
-## Build and run
+## Install
 
 ```bash
-git clone https://github.com/Fuut4/rayneo-pin.git
-cd rayneo-pin
-./build.sh
-open RayNeoPin.app
+curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | zsh
 ```
 
+The installer clones the source to `~/Library/Application Support/RayNeoPin/src`, builds it, installs `RayNeoPin.app` to `/Applications`, and launches it.
+
+**To update:** choose **Buscar actualización…** in the menu-bar icon, or run the same command again. Either way it pulls, rebuilds, reinstalls, and relaunches. It does nothing if you're already up to date; pass `--force` to rebuild anyway.
+
 1. Plug in the glasses. They show up as an extended display named *SmartGlasses*.
-2. Launch the app. Allow **Screen & System Audio Recording** when macOS asks (System Settings → Privacy & Security). Ad-hoc builds may need this again after a rebuild.
+2. Launch the app. Allow **Screen & System Audio Recording** for RayNeoPin (System Settings → Privacy & Security). The app opens that pane for you and starts once the permission is on. If it stays black, quit and reopen it.
+
+   > **Keeping the permission across updates:** macOS ties the permission to the code signature. `build.sh` signs with your first *Apple Development* certificate if you have one, and then the permission survives updates. Free Apple ID certificates from Xcode work. Without a certificate the build is ad-hoc signed, and you'll need to re-enable the permission after each update. To pick a specific identity, set `SIGN_ID="…"`.
 3. Keep your head still for about 1 second while the gyro calibrates. The screen appears centered where you're looking.
 
 Want an *extra* monitor instead of a mirror? Create a virtual display (for example with BetterDisplay) and pick it under **Fuente** (Source) in the menu.
@@ -49,6 +52,14 @@ Want an *extra* monitor instead of a mirror? Create a virtual display (for examp
 | ⌃⌥Q | Quit |
 
 If the screen "swims" (slides in the same direction you turn) instead of staying put, tune the FOV with ⌃⌥ `]` / `[`. The default is 46° diagonal.
+
+### Build from source (for development)
+
+```bash
+git clone https://github.com/Fuut4/rayneo-pin.git
+cd rayneo-pin
+./build.sh && open RayNeoPin.app
+```
 
 ### Debugging
 

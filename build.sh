@@ -1,30 +1,46 @@
 #!/bin/zsh
 # Builds RayNeoPin.app next to this script.
+#
+# Signing: uses SIGN_ID if set, else your first "Apple Development" identity, else ad-hoc.
+# A real identity matters: macOS ties the Screen Recording permission to the signature,
+# so ad-hoc builds lose it on every rebuild.
 set -euo pipefail
 cd "${0:A:h}"
 
 APP=RayNeoPin.app
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+BUNDLE_ID=io.github.fuut4.rayneopin
+REVISION=$(git rev-parse --short HEAD 2>/dev/null || echo dev)
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+rm -rf "$APP"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>local.rayneopin</string>
+  <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
   <key>CFBundleName</key><string>RayNeoPin</string>
   <key>CFBundleExecutable</key><string>RayNeoPin</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>0.2</string>
+  <key>CFBundleVersion</key><string>$REVISION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
 PLIST
+echo "$REVISION" > "$APP/Contents/Resources/revision"
 
 swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 main.swift -o "$APP/Contents/MacOS/RayNeoPin"
-codesign --force --sign - --identifier local.rayneopin "$APP"
-echo "Built $PWD/$APP"
+
+SIGN_ID=${SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $2; exit}')}
+if [[ -n "$SIGN_ID" ]]; then
+  codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP"
+  echo "Signed with: $SIGN_ID"
+else
+  codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
+  echo "Signed ad-hoc (Screen Recording permission must be re-granted after each update)"
+fi
+echo "Built $PWD/$APP ($REVISION)"
