@@ -60,7 +60,7 @@ final class Settings {
         "follow": false, "lookAwayRecenter": false, "doubleTap": true,
         "strictAccel": true, "temperatureComp": true, "airPodsBias": true, "airPodsScale": false,
         "cameraDrift": false, "typingDrift": false,
-        "predictFiltered": true, "skipIdle": true, "metalHUD": false,
+        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true,
     ]
 
     func flag(_ key: String) -> Bool { bool(key, Settings.flagDefaults[key] ?? false) }
@@ -550,7 +550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if renderer == nil, let glasses, let gid {
             do {
                 let r = try Renderer(screen: glasses, displayID: gid, imu: imu, capture: capture, headphones: headphones,
-                                     pacing: settings.pacing)
+                                     pacing: settings.pacing, gammaSpace: settings.flag("gammaResample"))
                 r.update { settings.apply(to: &$0) }
                 r.setFaceTracker(face)
                 r.setSideScreens(sideCaptures.map { ($0.value, $0.key) })
@@ -723,7 +723,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         resolutionMenu.removeAllItems()
         if settings.sourceKind != "virtual" { resolutionMenu.addItem(header("Picking one switches to the Virtual Display setup")) }
         for r in VirtualMonitor.Resolution.allCases {
-            if r == .wuxga || r == .uw2560 || r == .manual { resolutionMenu.addItem(.separator()) }
+            if r == .fhd || r == .wuxga || r == .uw2560 || r == .manual { resolutionMenu.addItem(.separator()) }
             let i = item(r.rawValue, #selector(pickResolution(_:)))
             i.representedObject = "\(r)"
             i.state = settings.resolution == r ? .on : .off
@@ -770,6 +770,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         r.addItem(flagItem("Smart Sampling (bicubic when enlarged, 4× when shrunk)", "smartFilter"))
         r.addItem(flagItem("Pixel Lock When Still (exact 1:1 pixels near 100% scale)", "pixelLock"))
         r.addItem(flagItem("Curved Ultrawide Screen", "curved"))
+        r.addItem(flagItem("Resize Text Like macOS (gamma space — no glow/halo)", "gammaResample"))
+        r.addItem(item("Use Crisp Retina (text drawn at 2×, Virtual Display)", #selector(useCrispRetina)))
         r.addItem(.separator())
         r.addItem(header("Eye comfort"))
         r.addItem(choiceMenu("Warmth", "warmth", [("Off", "0"), ("Low", "0.3"), ("Medium", "0.6"), ("High", "1")]))
@@ -834,6 +836,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let on = settings.flag(key)
         if key == "follow" || key == "lookAwayRecenter" { renderer?.recenter() }
         applyExtras()
+        if key == "gammaResample" { rebuildRenderer() }
         renderer?.show("\(title): \(on ? "on" : "off")", seconds: 2)
     }
 
@@ -880,6 +883,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.shutdown()
         renderer = nil
         screensChanged()
+    }
+
+    @objc func useCrispRetina() {
+        settings.resolution = .crispRetina
+        if settings.sourceKind != "virtual" {
+            settings.sourceKind = "virtual"
+            applySetup()
+        } else {
+            applyResolution()
+        }
+        renderer?.show("Crisp Retina: macOS draws the desktop at 2×", seconds: 3)
     }
 
     @objc func presetDesk() { applyPreset("desk") }
@@ -1275,7 +1289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let z = settings.zoom
         renderer?.update { $0.zoom = z }
         renderer?.show(String(format: "Zoom %.0f%%", z * 100), seconds: 1)
-        if settings.resolution == .crisp { applyResolutionSoon() }
+        if settings.resolution == .crisp || settings.resolution == .crispRetina { applyResolutionSoon() }
     }
 
     func fov(_ delta: Double) {

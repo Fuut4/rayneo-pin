@@ -91,7 +91,8 @@ enum Displays {
 /// the zoom without recreating the display (which would throw its windows onto another screen).
 final class VirtualMonitor {
     enum Resolution: String, CaseIterable {
-        case crisp = "Crisp 16:9 — follows zoom, text stays sharp (recommended)"
+        case crispRetina = "Crisp Retina 16:9 — macOS draws text at 2×, cleanest text"
+        case crisp = "Crisp 16:9 — follows zoom, text stays sharp"
         case fhd = "1920 × 1080 (16:9)"
         case fhdHiDPI = "1920 × 1080 HiDPI (16:9)"
         case qhd = "2560 × 1440 (16:9)"
@@ -111,6 +112,12 @@ final class VirtualMonitor {
             case .crisp:
                 let w = VirtualMonitor.widths.min { abs(Double($0) - coveredPixels) < abs(Double($1) - coveredPixels) }!
                 return (w, w * 9 / 16, false)
+            case .crispRetina:
+                // Same text size as Crisp, but rendered with twice the pixels and shrunk 2:1 in the
+                // glasses, like a Retina Mac's scaled modes: no 1×-text resampling blur.
+                let retina = VirtualMonitor.widths.filter { VirtualMonitor.widths.contains($0 * 2) }
+                let w = retina.min { abs(Double($0) - coveredPixels) < abs(Double($1) - coveredPixels) }!
+                return (w, w * 9 / 16, true)
             case .fhd: return (1920, 1080, false)
             case .fhdHiDPI: return (1920, 1080, true)
             case .qhd: return (2560, 1440, false)

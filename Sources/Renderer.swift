@@ -421,8 +421,14 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var needsDraw = true
     }
 
+    /// Resample in gamma space (sRGB values as stored) instead of linear light. Font renderers,
+    /// macOS included, blend text in gamma space; resampling it in linear light makes light text
+    /// on dark backgrounds glow (a halo) and dark text on light backgrounds thin.
+    let gammaSpace: Bool
+    private let pixelFormat: MTLPixelFormat
+
     init(screen: NSScreen, displayID: CGDirectDisplayID, imu: IMU, capture: Capture, headphones: Headphones,
-         pacing: FramePacing) throws {
+         pacing: FramePacing, gammaSpace: Bool) throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
             throw NSError(domain: "RayNeoPin", code: 1, userInfo: [NSLocalizedDescriptionKey: "Metal unavailable"])
         }
@@ -432,6 +438,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         self.headphones = headphones
         self.displayID = displayID
         self.pacing = pacing
+        self.gammaSpace = gammaSpace
+        pixelFormat = gammaSpace ? .bgra8Unorm : .bgra8Unorm_srgb
         panels = [Panel(capture, side: 0)]
         stereo = screen.frame.width / screen.frame.height > 3
 
@@ -439,7 +447,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         let pd = MTLRenderPipelineDescriptor()
         pd.vertexFunction = library.makeFunction(name: "vs")
         pd.fragmentFunction = library.makeFunction(name: "fs")
-        pd.colorAttachments[0].pixelFormat = .bgra8Unorm_srgb
+        pd.colorAttachments[0].pixelFormat = pixelFormat
         // Premultiplied alpha, for the cursor; the opaque screen is unaffected.
         pd.colorAttachments[0].isBlendingEnabled = true
         pd.colorAttachments[0].sourceRGBBlendFactor = .one
@@ -481,7 +489,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         window.contentView = view
 
         metalLayer.device = device
-        metalLayer.pixelFormat = .bgra8Unorm_srgb
+        metalLayer.pixelFormat = pixelFormat
         metalLayer.framebufferOnly = true
         metalLayer.displaySyncEnabled = true // no tearing
         metalLayer.maximumDrawableCount = 2 // one frame less queued latency than the default 3
@@ -627,7 +635,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: false)
         image.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
         NSGraphicsContext.restoreGraphicsState()
-        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: w, height: h, mipmapped: false)
+        let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: w, height: h, mipmapped: false)
         d.usage = [.shaderRead]
         let t = device.makeTexture(descriptor: d)
         t?.replace(region: MTLRegionMake2D(0, 0, w, h), mipmapLevel: 0, withBytes: data, bytesPerRow: ctx.bytesPerRow)
@@ -1257,10 +1265,10 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             devCaptureSize = CGSize(width: w, height: h)
         }
         var cvTex: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(nil, cache, pb, nil, .bgra8Unorm_srgb, w, h, 0, &cvTex)
+        CVMetalTextureCacheCreateTextureFromImage(nil, cache, pb, nil, pixelFormat, w, h, 0, &cvTex)
         guard let cvTex, let src = CVMetalTextureGetTexture(cvTex), let blit = cb.makeBlitCommandEncoder() else { return }
         if panel.texture?.width != w || panel.texture?.height != h {
-            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: w, height: h, mipmapped: true)
+            let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: w, height: h, mipmapped: true)
             d.usage = [.shaderRead]
             d.storageMode = .private
             panel.texture = device.makeTexture(descriptor: d)
