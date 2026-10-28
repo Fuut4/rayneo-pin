@@ -88,6 +88,17 @@ struct Row<Control: View>: View {
     }
 }
 
+/// A keyboard shortcut drawn like a key, as in System Settings.
+struct KeyCap: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(.body, design: .rounded).weight(.medium))
+            .padding(.horizontal, 8).padding(.vertical, 2)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+}
+
 /// A toggle row with an explanation.
 struct ToggleRow: View {
     let title: String
@@ -100,7 +111,7 @@ struct ToggleRow: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, display, text, tracking, anchoring, accuracy, performance, about
+    case general, display, text, tracking, anchoring, accuracy, performance, shortcuts, about
     var id: String { rawValue }
 
     var title: String {
@@ -112,6 +123,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .anchoring: return "Anchoring"
         case .accuracy: return "Accuracy"
         case .performance: return "Performance"
+        case .shortcuts: return "Shortcuts"
         case .about: return "About"
         }
     }
@@ -125,6 +137,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .anchoring: return ("pin.fill", .orange)
         case .accuracy: return ("scope", .red)
         case .performance: return ("speedometer", .teal)
+        case .shortcuts: return ("command", .purple)
         case .about: return ("info.circle.fill", .secondary)
         }
     }
@@ -165,6 +178,7 @@ struct SettingsView: View {
                 case .anchoring: anchoring
                 case .accuracy: accuracy
                 case .performance: performance
+                case .shortcuts: shortcuts
                 case .about: about
                 }
             }
@@ -427,6 +441,29 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var shortcuts: some View {
+        Form {
+            Section {
+                ForEach(SettingsView.hotkeys, id: \.0) { key, action in
+                    Row(title: action) { KeyCap(text: key) }
+                }
+            } header: {
+                Text("Global shortcuts")
+            } footer: {
+                Text("They work from any app. You can also double-tap the glasses to recenter.").font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    static let hotkeys: [(String, String)] = [
+        ("⌃⌥R", "Recenter"), ("⌃⌥T", "Pause tracking"), ("⌃⌥1", "Desk preset"), ("⌃⌥2", "Sofa preset"),
+        ("⌃⌥3", "Lying-down preset"), ("⌃⌥F", "Smooth follow on/off"), ("⌃⌥I", "Zoom in"), ("⌃⌥O", "Zoom out"),
+        ("⌃⌥0", "Actual size"), ("⌃⌥↑", "Raise the screen"), ("⌃⌥↓", "Lower the screen"),
+        ("⌃⌥Y", "Lock yaw (follow left/right)"), ("⌃⌥P", "Lock pitch (follow up/down)"), ("⌃⌥E", "Lock roll (follow tilt)"),
+        ("⌃⌥L", "Field of view +1°"), ("⌃⌥K", "Field of view −1°"), ("⌃⌥G", "Turn-sensitivity calibration"),
+        ("⌃⌥D", "Developer mode"), ("⌃⌥Q", "Quit"),
+    ]
 
     private var about: some View {
         Form {

@@ -503,7 +503,7 @@ final class IMU {
     private var lastSample = Date.distantPast
     private(set) var samples = 0
     private var raw = Raw()
-    private var history = PoseHistory(capacity: 2600) // ~5 s at 500 Hz
+    private var history = PoseHistory(capacity: 15000) // ~30 s at 500 Hz: AirPods calibration re-pairs old motion
     private var rateCount = 0
     private var rateStart = Date()
 
@@ -549,7 +549,7 @@ final class IMU {
         return Snapshot(q: fusion.q, omega: fusion.omega, state: fusion.state, connected: connected)
     }
 
-    /// What the glasses measured at host time `t` (within the last ~5 s).
+    /// What the glasses measured at host time `t` (within the last ~30 s).
     func pose(at t: Double) -> PoseSample? {
         lock.lock(); defer { lock.unlock() }
         return history.pose(at: t)

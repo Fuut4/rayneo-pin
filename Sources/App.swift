@@ -206,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ note: Notification) {
         signal(SIGTERM, SIG_IGN)
         termSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        termSource?.setEventHandler { NSApp.terminate(nil) }
+        termSource?.setEventHandler { AppDelegate.quit() }
         termSource?.resume()
 
         imu.scale = settings.gyroScale
@@ -240,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (kVK_ANSI_L, { [weak self] in self?.fov(1) }),
             (kVK_ANSI_K, { [weak self] in self?.fov(-1) }),
             (kVK_ANSI_D, { [weak self] in self?.toggleDeveloper() }),
-            (kVK_ANSI_Q, { NSApp.terminate(nil) }),
+            (kVK_ANSI_Q, { AppDelegate.quit() }),
             (kVK_ANSI_1, { [weak self] in self?.applyPreset("desk") }),
             (kVK_ANSI_2, { [weak self] in self?.applyPreset("sofa") }),
             (kVK_ANSI_3, { [weak self] in self?.applyPreset("lying") }),
@@ -608,11 +608,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return p.terminationStatus == 0
     }
 
+    /// Starts the installed copy once this process has really exited (an `open` while we still
+    /// run would just bring the old version back to the front).
     func relaunch() {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
-        p.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+        p.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; /usr/bin/open \"$0\"",
+                       Bundle.main.bundlePath, String(getpid())]
         try? p.run()
+        AppDelegate.quit()
+    }
+
+    /// Normal quit (restores the cursor, puts the glasses back in 2D), but never hangs: if cleanup
+    /// takes more than 3 s, exit anyway.
+    static func quit() {
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) { exit(0) }
         NSApp.terminate(nil)
     }
 
@@ -623,39 +633,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "RayNeoPin")
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(header("RayNeoPin \(SettingsView.revision)")) // which build is running
+        menu.addItem(statusLine)
         menu.addItem(.separator())
-        menu.addItem(item("Recenter  ⌃⌥R", #selector(recenter)))
-        menu.addItem(toggle("Pause Tracking  ⌃⌥T", #selector(togglePause)) { [weak self] in self?.renderer?.currentParams.paused == true })
+        menu.addItem(item("Recenter", #selector(recenter), key: "r"))
+        menu.addItem(toggle("Pause Tracking", #selector(togglePause), key: "t") { [weak self] in self?.renderer?.currentParams.paused == true })
         let presets = NSMenu()
-        presets.addItem(item("Desk — fixed in space  ⌃⌥1", #selector(presetDesk)))
-        presets.addItem(item("Sofa — follows you, no tilt  ⌃⌥2", #selector(presetSofa)))
-        presets.addItem(item("Lying Down — follows you, level  ⌃⌥3", #selector(presetLying)))
+        presets.addItem(toggle("Desk", #selector(presetDesk), key: "1") { [weak self] in self?.currentPreset == "desk" })
+        presets.addItem(toggle("Sofa", #selector(presetSofa), key: "2") { [weak self] in self?.currentPreset == "sofa" })
+        presets.addItem(toggle("Lying Down", #selector(presetLying), key: "3") { [weak self] in self?.currentPreset == "lying" })
         menu.addItem(submenu("Preset", presets))
-        menu.addItem(.separator())
-        menu.addItem(submenu("Source", sourceMenu))
-        menu.addItem(submenu("Head Tracking Source", trackingMenu))
-        menu.addItem(submenu("AirPods", airPodsMenu))
-        menu.addItem(item("Recalibrate AirPods", #selector(recalibrateAirPods)))
-        menu.addItem(item("Calibrate Gyro (glasses on a table)…", #selector(calibrate)))
         let zoomMenu = NSMenu()
-        zoomMenu.addItem(item("Zoom In  ⌃⌥I", #selector(zoomIn)))
-        zoomMenu.addItem(item("Zoom Out  ⌃⌥O", #selector(zoomOut)))
-        zoomMenu.addItem(item("Reset Zoom  ⌃⌥0", #selector(zoomReset)))
+        zoomMenu.addItem(item("Zoom In", #selector(zoomIn), key: "i"))
+        zoomMenu.addItem(item("Zoom Out", #selector(zoomOut), key: "o"))
+        zoomMenu.addItem(item("Actual Size", #selector(zoomReset), key: "0"))
         menu.addItem(submenu("Zoom", zoomMenu))
         menu.addItem(.separator())
-        let settingsItem = item("Settings…", #selector(showSettings))
-        settingsItem.keyEquivalent = ","
-        menu.addItem(settingsItem)
-        menu.addItem(toggle("Developer Mode  ⌃⌥D", #selector(toggleDeveloper)) { [weak self] in self?.settings.developer == true })
+        menu.addItem(submenu("Display", sourceMenu))
+        menu.addItem(submenu("Head Tracking", trackingMenu))
+        menu.addItem(.separator())
+        menu.addItem(toggle("Developer Mode", #selector(toggleDeveloper), key: "d") { [weak self] in self?.settings.developer == true })
+        menu.addItem(item("Settings…", #selector(showSettings), key: ",", modifiers: .command))
         menu.addItem(item("Check for Updates…", #selector(update)))
-        menu.addItem(item("☕ Buy Me a Coffee — help pay Claude's bill", #selector(coffee)))
-        menu.addItem(item("Quit  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
+        menu.addItem(.separator())
+        menu.addItem(item("Quit RayNeoPin", #selector(quitApp), key: "q"))
         statusItem.menu = menu
     }
 
-    func item(_ title: String, _ action: Selector, target: AnyObject? = nil) -> NSMenuItem {
-        let i = NSMenuItem(title: title, action: action, keyEquivalent: "")
+    /// First line of the menu: which build runs, and whether the glasses are there.
+    let statusLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+
+    /// Which preset the current settings match, if any.
+    var currentPreset: String? {
+        let follow = settings.flag("follow")
+        if !follow, !settings.lockYaw, !settings.lockPitch, !settings.lockRoll { return "desk" }
+        if follow, !settings.lockYaw, !settings.lockPitch, settings.lockRoll { return "sofa" }
+        if follow, !settings.lockYaw, settings.lockPitch, settings.lockRoll { return "lying" }
+        return nil
+    }
+
+    @objc func quitApp() { AppDelegate.quit() }
+
+    /// Menu item; `key` shows on the right, with ⌃⌥ like the global hotkeys (which work everywhere).
+    func item(_ title: String, _ action: Selector, key: String = "", modifiers: NSEvent.ModifierFlags = [.control, .option],
+              target: AnyObject? = nil) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        if !key.isEmpty { i.keyEquivalentModifierMask = modifiers }
         i.target = target ?? self
         return i
     }
@@ -672,14 +694,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
-    func toggle(_ title: String, _ action: Selector, isOn: @escaping () -> Bool) -> NSMenuItem {
-        let i = item(title, action)
+    func toggle(_ title: String, _ action: Selector, key: String = "", isOn: @escaping () -> Bool) -> NSMenuItem {
+        let i = item(title, action, key: key)
         toggles.append((i, isOn))
         return i
     }
 
     func menuWillOpen(_ menu: NSMenu) {
         for (i, isOn) in toggles { i.state = isOn() ? .on : .off }
+        let s = imu.snapshot()
+        statusLine.title = "RayNeoPin \(SettingsView.revision) — " + (!s.connected ? "glasses not connected" : s.ready ? "tracking" : "calibrating…")
+        statusLine.isEnabled = false
         trackingMenu.removeAllItems()
         for mode in TrackingMode.allCases {
             let i = item(mode.title, #selector(pickTracking(_:)))
@@ -687,14 +712,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             i.state = settings.tracking == mode ? .on : .off
             trackingMenu.addItem(i)
         }
+        trackingMenu.addItem(.separator())
         if settings.tracking != .glasses {
-            trackingMenu.addItem(.separator())
             trackingMenu.addItem(header(
-                headphones.isDenied ? "AirPods: motion access denied (System Settings › Privacy & Security › Motion & Fitness)"
-                    : renderer?.isUsingAirPods == true ? "AirPods: active"
-                    : headphones.latest() != nil ? "AirPods: learning — turn your head left and right"
-                    : "AirPods: no head tracking data — put them on"))
+                headphones.isDenied ? "AirPods: motion access denied in System Settings"
+                    : renderer?.isUsingAirPods == true ? "AirPods: correcting drift"
+                    : headphones.latest() != nil ? "AirPods: calibrating — turn and nod"
+                    : "AirPods: no data — put them on"))
         }
+        trackingMenu.addItem(submenu("AirPods", airPodsMenu))
+        trackingMenu.addItem(item("Recalibrate AirPods", #selector(recalibrateAirPods)))
+        trackingMenu.addItem(.separator())
+        trackingMenu.addItem(item("Calibrate Gyro (glasses on a table)…", #selector(calibrate)))
         rebuildAirPodsMenu()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let found = HeadphoneCatalog.paired()
@@ -908,39 +937,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @MainActor func refreshSources() async {
         sourceMenu.removeAllItems()
-        for (kind, title) in [("glasses", "Glasses Screen — one display (recommended)"),
-                              ("ultrawide", "Glasses Screen Ultrawide 32:9 — one display, 3D mode, 60 Hz"),
-                              ("virtual", "Virtual Display — any resolution incl. ultrawide, 120 Hz (adds a display)")] {
+        for (kind, title) in [("glasses", "Glasses Screen"), ("ultrawide", "Glasses Screen Ultrawide (32:9)"),
+                              ("virtual", "Virtual Display")] {
             let i = item(title, #selector(pickSource(_:)))
             i.representedObject = [kind, UInt32(0)]
             i.state = settings.sourceKind == kind ? .on : .off
             sourceMenu.addItem(i)
         }
+        let displays = NSMenu(), windows = NSMenu()
         sourceMenu.addItem(.separator())
+        sourceMenu.addItem(submenu("Mirror Display", displays))
+        sourceMenu.addItem(submenu("Mirror Window", windows))
         guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else {
-            sourceMenu.addItem(NSMenuItem(title: "Screen Recording permission needed", action: nil, keyEquivalent: ""))
+            displays.addItem(header("Screen Recording permission needed"))
             return
         }
         let gid = Displays.glasses().map(Displays.id)
         for d in content.displays where d.displayID != gid && d.displayID != monitor?.displayID {
-            let i = item("Mirror \(Displays.name(of: d.displayID))", #selector(pickSource(_:)))
+            let i = item(Displays.name(of: d.displayID), #selector(pickSource(_:)))
             i.representedObject = ["display", d.displayID]
             i.state = settings.sourceKind == "display" && source == .display(d.displayID) ? .on : .off
-            sourceMenu.addItem(i)
+            displays.addItem(i)
         }
-        sourceMenu.addItem(.separator())
-        let windows = content.windows.filter {
+        let list = content.windows.filter {
             $0.windowLayer == 0 && $0.frame.width > 200 && $0.frame.height > 150
                 && $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
         }
-        for w in windows.prefix(25) {
+        for w in list.prefix(25) {
             let app = w.owningApplication?.applicationName ?? "?"
             let title = (w.title ?? "").isEmpty ? app : "\(app) — \(w.title!)"
-            let i = item("Window: \(title.prefix(70))", #selector(pickSource(_:)))
+            let i = item(String(title.prefix(70)), #selector(pickSource(_:)))
             i.representedObject = ["window", w.windowID]
             i.state = source == .window(w.windowID) ? .on : .off
-            sourceMenu.addItem(i)
+            windows.addItem(i)
         }
+        if list.isEmpty { windows.addItem(header("No windows")) }
     }
 
     @objc func pickSource(_ sender: NSMenuItem) {
@@ -1030,7 +1061,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// Small HUD on the Mac's own screen, top center.
-    func showCalibrationStatus(_ text: String) {
+    func showCalibrationStatus(_ text: String, title: String = "RayNeoPin Calibration") {
         if calibrationPanel == nil {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 64),
                                 styleMask: [.titled, .hudWindow, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -1046,6 +1077,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             calibrationPanel = panel
         }
         guard let panel = calibrationPanel, let label = panel.contentView?.subviews.first as? NSTextField else { return }
+        panel.title = title
         label.stringValue = text
         if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main {
             let f = screen.visibleFrame
@@ -1222,22 +1254,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             renderer?.show("Install with install.sh to update from the menu", seconds: 5)
             return
         }
-        renderer?.show("Checking for updates…", seconds: 60)
+        renderer?.show("Checking for updates…", seconds: 120)
+        showCalibrationStatus("Checking for updates…", title: "RayNeoPin Update")
         let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayNeoPin-update.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [script]
+        p.environment = ProcessInfo.processInfo.environment.merging(["RAYNEOPIN_FROM_APP": "1"]) { $1 }
         p.standardOutput = try? FileHandle(forWritingTo: logURL)
         p.standardError = p.standardOutput
-        // If there is a new version the script quits and relaunches this app; otherwise it just exits.
+        // The script builds and installs a new version, then this app restarts into it.
         p.terminationHandler = { [weak self] p in
             DispatchQueue.main.async {
-                // The script's last line says what it checked, e.g. "up to date (61775b3, test/everything)".
+                guard let self else { return }
+                // The script's last line says what it did, e.g. "up to date (61775b3, test/everything)".
                 let last = (try? String(contentsOf: logURL, encoding: .utf8))?
                     .split(separator: "\n").last.map(String.init) ?? ""
-                self?.renderer?.show(p.terminationStatus == 0 ? (last.isEmpty ? "You have the latest version" : last)
-                                     : "Update failed (see ~/Library/Logs/RayNeoPin-update.log)", seconds: 6)
+                let message = p.terminationStatus != 0 ? "Update failed — see ~/Library/Logs/RayNeoPin-update.log"
+                    : last.contains(" installed to ") ? "Updated — restarting…" : (last.isEmpty ? "You have the latest version" : last)
+                self.renderer?.show(message, seconds: 6)
+                self.showCalibrationStatus(message, title: "RayNeoPin Update")
+                if p.terminationStatus == 0, last.contains(" installed to ") {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.relaunch() }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { if self.calibrationTimer == nil { self.calibrationPanel?.orderOut(nil) } }
+                }
             }
         }
         try? p.run()
