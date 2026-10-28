@@ -623,6 +623,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "RayNeoPin")
         let menu = NSMenu()
         menu.delegate = self
+        menu.addItem(header("RayNeoPin \(SettingsView.revision)")) // which build is running
+        menu.addItem(.separator())
         menu.addItem(item("Recenter  ⌃⌥R", #selector(recenter)))
         menu.addItem(toggle("Pause Tracking  ⌃⌥T", #selector(togglePause)) { [weak self] in self?.renderer?.currentParams.paused == true })
         let presets = NSMenu()

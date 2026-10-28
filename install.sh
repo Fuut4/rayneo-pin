@@ -47,7 +47,10 @@ main() {
   echo "Building RayNeoPin $NEW…"
   "$SRC/build.sh"
 
-  pkill -x RayNeoPin 2>/dev/null && sleep 1 || true
+  # Quit the running copy for sure, or the old version keeps running after the update.
+  pkill -x RayNeoPin 2>/dev/null || true
+  for _ in {1..20}; do pgrep -x RayNeoPin >/dev/null || break; sleep 0.25; done
+  pkill -9 -x RayNeoPin 2>/dev/null || true
   mkdir -p "${DEST:h}"
   rm -rf "$DEST"
   cp -R "$SRC/RayNeoPin.app" "$DEST"
