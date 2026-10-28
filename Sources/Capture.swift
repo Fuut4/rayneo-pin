@@ -12,6 +12,8 @@ enum Source: Equatable {
 final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     var onError: ((String) -> Void)?
     var onStarted: (() -> Void)?
+    /// Window numbers of our own windows, excluded from display captures.
+    var ownWindowIDs: () -> [CGWindowID] = { [] }
     private(set) var source: Source?
     private var stream: SCStream?
     private let queue = DispatchQueue(label: "capture", qos: .userInteractive)
@@ -38,7 +40,11 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             case .display(let id):
                 guard let display = content.displays.first(where: { $0.displayID == id })
                 else { onError?("Display \(id) is not available for capture"); return }
-                filter = SCContentFilter(display: display, excludingWindows: [])
+                // Never capture our own windows: when the source is the glasses' own display, our
+                // rendering sits on top of exactly what we capture. ScreenCaptureKit doesn't tie a
+                // menu-bar app's windows to the app, so match them by window number.
+                let ours = Set(ownWindowIDs())
+                filter = SCContentFilter(display: display, excludingWindows: content.windows.filter { ours.contains($0.windowID) })
                 let mode = CGDisplayCopyDisplayMode(id)
                 size = CGSize(width: mode?.pixelWidth ?? display.width, height: mode?.pixelHeight ?? display.height)
             case .window(let id):

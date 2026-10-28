@@ -51,9 +51,9 @@ enum Displays {
         return CGCompleteDisplayConfiguration(config, .forSession) == .success
     }
 
-    /// Virtual monitor centered above the main display; the glasses' physical display to the right
-    /// of the main display, where the cursor fence keeps the pointer out.
-    static func arrange(virtual vid: CGDirectDisplayID?, glasses gid: CGDirectDisplayID?) {
+    /// `above`: the display you work on in the glasses, centered above the main display.
+    /// `right`: a display that only shows our rendering, parked to the right (and fenced off).
+    static func arrange(above vid: CGDirectDisplayID?, right gid: CGDirectDisplayID?) {
         let main = CGMainDisplayID()
         guard main != vid, main != gid else { return }
         let mb = CGDisplayBounds(main)
@@ -132,19 +132,38 @@ final class VirtualMonitor {
     }
 }
 
-/// Keeps the pointer (and so dragged windows) off the glasses' physical display: that display only
-/// exists to show our rendering, so for the user there are just two screens.
+/// Cursor handling for the glasses' physical display:
+///  - `blocked`: with a virtual monitor, the glasses' display only shows our rendering, so the
+///    pointer (and dragged windows) are kept off it;
+///  - `hideOn`: when the glasses' own desktop is the pinned screen, the hardware cursor would be
+///    drawn over our rendering at its unpinned position, so it is hidden while it's on that display
+///    (the pinned image still shows it, captured with the desktop).
 final class CursorFence {
     var blocked: CGDirectDisplayID?
+    var hideOn: CGDirectDisplayID? { didSet { if hideOn == nil { setHidden(false) } } }
     private var timer: Timer?
+    private var hidden = false
 
     func start() {
+        // Background apps may only hide the cursor with this WindowServer property.
+        let cid = _CGSDefaultConnection()
+        CGSSetConnectionProperty(cid, cid, "SetsCursorInBackground" as CFString, kCFBooleanTrue)
         timer = Timer.scheduledTimer(withTimeInterval: 1 / 120, repeats: true) { [weak self] _ in self?.check() }
         RunLoop.main.add(timer!, forMode: .common)
     }
 
+    func stop() { setHidden(false) }
+
+    private func setHidden(_ hide: Bool) {
+        guard hide != hidden else { return }
+        hidden = hide
+        if hide { CGDisplayHideCursor(kCGNullDirectDisplay) } else { CGDisplayShowCursor(kCGNullDirectDisplay) }
+    }
+
     private func check() {
-        guard let blocked, let loc = CGEvent(source: nil)?.location else { return }
+        guard let loc = CGEvent(source: nil)?.location else { return }
+        if let hideOn { setHidden(CGDisplayBounds(hideOn).contains(loc)) }
+        guard let blocked else { return }
         let b = CGDisplayBounds(blocked)
         guard b.contains(loc) else { return }
         var best: CGPoint?

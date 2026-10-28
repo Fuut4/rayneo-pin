@@ -40,8 +40,10 @@ final class Settings {
         get { VirtualMonitor.Resolution.allCases.first { "\($0)" == d.string(forKey: "resolutionMode") } ?? .crisp }
         set { d.set("\(newValue)", forKey: "resolutionMode") }
     }
-    /// "virtual", or "display"/"window" for mirroring something that already exists.
-    var sourceKind: String { get { d.string(forKey: "sourceKind") ?? "virtual" } set { d.set(newValue, forKey: "sourceKind") } }
+    /// "glasses" (the glasses' own desktop, one display), "ultrawide" (same, in 3D mode: 3840×1080),
+    /// "virtual" (an extra virtual monitor), or "display"/"window" to mirror something that exists.
+    var sourceKind: String { get { d.string(forKey: "setup") ?? "glasses" } set { d.set(newValue, forKey: "setup") } }
+    var singleDisplay: Bool { sourceKind == "glasses" || sourceKind == "ultrawide" }
     /// AirPods calibration per Bluetooth address.
     func airPodsCalibration(for address: String) -> AirPodsCalibration.Saved? {
         (d.data(forKey: "airpods." + address)).flatMap { try? JSONDecoder().decode(AirPodsCalibration.Saved.self, from: $0) }
@@ -123,9 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         imu.onConnect = { [weak self] in
-            guard let self, self.settings.highRefresh else { return }
-            self.imu.send(.panel120Hz)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.applyRefreshRate() }
+            DispatchQueue.main.async {
+                self?.applyPanelMode()
+                if self?.calibrationTimer != nil { self?.imu.send(.proximitySensor, value: 0) }
+            }
         }
         imu.start()
         if settings.tracking != .glasses { headphones.start() }
@@ -150,6 +153,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSLog("%@", msg)
             if CGPreflightScreenCaptureAccess() { self?.renderer?.show(msg, seconds: 8) } else { self?.permissionMissing() }
         }
+        capture.ownWindowIDs = {
+            let ids = { NSApp.windows.map { CGWindowID($0.windowNumber) } }
+            return Thread.isMainThread ? ids() : DispatchQueue.main.sync(execute: ids)
+        }
         capture.onStarted = { [weak self] in
             self?.renderer?.setNotice(nil)
             self?.retryTimer?.invalidate()
@@ -169,15 +176,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         fence.start()
-        if settings.sourceKind == "virtual" { createMonitor() }
-        screensChanged()
+        applySetup()
         if settings.developer && settings.developerOnMac { showDeveloperPanel(true) }
     }
 
     func applicationWillTerminate(_ note: Notification) {
         saveBias()
+        if Displays.glasses().map({ $0.frame.width >= 3840 }) == true { imu.send(.display2D) } // leave the glasses in 2D
+        if calibrationTimer != nil { imu.send(.proximitySensor, value: 1) }
         imu.stop()
         headphones.stop()
+        fence.stop()
     }
 
     func saveBias() {
@@ -205,9 +214,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyResolution()
         // WindowServer needs a moment before the new display can be positioned.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            Displays.arrange(virtual: monitor.displayID, glasses: Displays.glasses().map(Displays.id))
+            Displays.arrange(above: monitor.displayID, right: Displays.glasses().map(Displays.id))
             self?.screensChanged()
         }
+    }
+
+    /// Switches between the display setups (see Settings.sourceKind).
+    func applySetup() {
+        if settings.sourceKind == "virtual" {
+            if monitor == nil { createMonitor() }
+        } else if monitor != nil {
+            monitor = nil // releasing it removes the virtual display
+        }
+        if settings.singleDisplay { source = nil }
+        applyPanelMode()
+        screensChanged()
+        arrangedFor = nil
+    }
+
+    /// 3D (3840×1080 @60) for ultrawide, otherwise 2D at the chosen refresh rate.
+    func applyPanelMode() {
+        let wide = Displays.glasses().map { $0.frame.width >= 3840 } ?? false
+        if settings.sourceKind == "ultrawide" {
+            if !wide { imu.send(.display3D) }
+        } else {
+            if wide { imu.send(.display2D) }
+            if settings.highRefresh { imu.send(.panel120Hz) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.applyRefreshRate() }
+        }
+    }
+
+    private var arrangedFor: CGDirectDisplayID?
+    /// In single-display setups the glasses' desktop is your second screen: put it above the Mac's.
+    func arrangeGlassesAbove(_ gid: CGDirectDisplayID) {
+        guard arrangedFor != gid else { return }
+        arrangedFor = gid
+        let main = CGDisplayBounds(CGMainDisplayID()), g = CGDisplayBounds(gid)
+        if abs(g.maxY - main.minY) > 1 { Displays.arrange(above: gid, right: nil) }
     }
 
     /// Picks the virtual display mode; in crisp mode one desktop pixel maps to one glasses pixel.
@@ -236,7 +279,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func screensChanged() {
         let glasses = Displays.glasses()
         let gid = glasses.map(Displays.id)
-        fence.blocked = gid
+        let single = settings.singleDisplay
+        fence.blocked = single ? nil : gid
+        fence.hideOn = single ? gid : nil
+        if single, let gid {
+            source = .display(gid) // the glasses' own desktop, under our rendering
+            arrangeGlassesAbove(gid)
+        }
         if let r = renderer, r.displayID != gid || r.window.frame.size != glasses?.frame.size {
             r.shutdown()
             renderer = nil
@@ -249,15 +298,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 r.onDeveloperText = { [weak self] text in self?.developerLabel?.stringValue = text }
                 renderer = r
                 seedAirPodsCalibration()
+                // A new window only shows up in ScreenCaptureKit's list a moment later; restart the
+                // capture then so it is excluded.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                    if let source = self?.source { Task { await self?.capture.start(source) } }
+                }
                 r.show("RayNeoPin — ⌃⌥R recenter · ⌃⌥I / ⌃⌥O zoom · ⌃⌥Q quit", seconds: 5)
             } catch {
                 NSLog("RayNeoPin: renderer failed: %@", error.localizedDescription)
             }
         }
-        if source == nil || source == .display(gid ?? 0) {
+        // Mirroring: never show the glasses inside the glasses.
+        if !single, source == nil || source == .display(gid ?? 0) {
             source = Displays.builtin().map { .display($0) } ?? .display(CGMainDisplayID())
         }
-        if let source, source != capture.source || needsRestart(source) {
+        if let source, needsRestart(source) || source != capture.source { // size check first: it records the size
             Task { await capture.start(source) }
         }
     }
@@ -268,7 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard case .display(let id) = source, let mode = CGDisplayCopyDisplayMode(id) else { return false }
         let size = CGSize(width: mode.pixelWidth, height: mode.pixelHeight)
         defer { capturedSize = size }
-        return capturedSize != nil && capturedSize != size
+        return capturedSize != size
     }
 
     // MARK: Permission
@@ -400,10 +455,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         resolutionMenu.removeAllItems()
+        if settings.sourceKind != "virtual" { resolutionMenu.addItem(header("Only for the Virtual Display setup")) }
         for r in VirtualMonitor.Resolution.allCases {
             let i = item(r.rawValue, #selector(pickResolution(_:)))
             i.representedObject = "\(r)"
             i.state = settings.resolution == r ? .on : .off
+            i.isEnabled = settings.sourceKind == "virtual"
             resolutionMenu.addItem(i)
         }
         sharpnessMenu.removeAllItems()
@@ -438,10 +495,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @MainActor func refreshSources() async {
         sourceMenu.removeAllItems()
-        let virtual = item("Virtual Display (extra monitor)", #selector(pickSource(_:)))
-        virtual.representedObject = ["virtual", UInt32(0)]
-        virtual.state = settings.sourceKind == "virtual" ? .on : .off
-        sourceMenu.addItem(virtual)
+        for (kind, title) in [("glasses", "Glasses Screen — one display (recommended)"),
+                              ("ultrawide", "Glasses Screen Ultrawide 32:9 — one display, 3D mode, 60 Hz"),
+                              ("virtual", "Virtual Display — second display, any resolution")] {
+            let i = item(title, #selector(pickSource(_:)))
+            i.representedObject = [kind, UInt32(0)]
+            i.state = settings.sourceKind == kind ? .on : .off
+            sourceMenu.addItem(i)
+        }
         sourceMenu.addItem(.separator())
         guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else {
             sourceMenu.addItem(NSMenuItem(title: "Screen Recording permission needed", action: nil, keyEquivalent: ""))
@@ -473,15 +534,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let rep = sender.representedObject as? [Any], let kind = rep.first as? String, let id = rep.last as? UInt32 else { return }
         settings.sourceKind = kind
         switch kind {
-        case "virtual":
-            if monitor == nil { createMonitor() } else { source = .display(monitor!.displayID) }
-        case "display":
-            monitor = nil
-            source = .display(id)
-        default:
-            monitor = nil
-            source = .window(id)
+        case "display": source = .display(id)
+        case "window": source = .window(id)
+        default: break
         }
+        applySetup()
         if let source { Task { await capture.start(source) } }
         renderer?.recenter()
     }
@@ -509,9 +566,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func recenter() { renderer?.recenter(); renderer?.show("Recentered", seconds: 1) }
 
+    var calibrationTimer: Timer?
+    var calibrationPanel: NSPanel?
+
+    /// Table calibration. The glasses' proximity sensor turns them off when not worn, so it is
+    /// disabled meanwhile; progress is shown on the Mac and signalled with sounds, since nobody is
+    /// looking into the glasses.
     @objc func calibrate() {
+        guard calibrationTimer == nil else { return }
+        imu.send(.proximitySensor, value: 0)
         imu.calibrateOnTable()
-        renderer?.show("Put the glasses on a flat surface and don't touch them", seconds: 4)
+        NSSound(named: "Tink")?.play()
+        showCalibrationStatus("Put the glasses on a flat surface and don't touch them…")
+        let started = Date()
+        calibrationTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            switch self.imu.snapshot().state {
+            case .calibratingOnTable(let progress):
+                if Date().timeIntervalSince(started) > 90 {
+                    self.imu.cancelCalibration()
+                    self.finishCalibration("Calibration failed: the glasses kept moving. The previous calibration is kept.", ok: false)
+                } else if progress > 0 {
+                    self.showCalibrationStatus(String(format: "Calibrating gyro… %.0f%%", progress * 100))
+                }
+            default:
+                let b = self.imu.bias * 180 / .pi
+                self.finishCalibration(String(format: "Calibration done. Gyro bias %+.3f %+.3f %+.3f °/s", b.x, b.y, b.z), ok: true)
+            }
+        }
+    }
+
+    func finishCalibration(_ message: String, ok: Bool) {
+        calibrationTimer?.invalidate()
+        calibrationTimer = nil
+        imu.send(.proximitySensor, value: 1)
+        if ok { saveBias() }
+        NSSound(named: ok ? "Glass" : "Basso")?.play()
+        showCalibrationStatus(message)
+        renderer?.show(message, seconds: 5)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            if self?.calibrationTimer == nil { self?.calibrationPanel?.orderOut(nil) }
+        }
+    }
+
+    /// Small HUD on the Mac's own screen, top center.
+    func showCalibrationStatus(_ text: String) {
+        if calibrationPanel == nil {
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 64),
+                                styleMask: [.titled, .hudWindow, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
+            panel.title = "RayNeoPin Calibration"
+            panel.level = .floating
+            panel.isReleasedWhenClosed = false
+            let label = NSTextField(labelWithString: "")
+            label.font = .systemFont(ofSize: 13, weight: .medium)
+            label.alignment = .center
+            label.frame = panel.contentView!.bounds.insetBy(dx: 12, dy: 12)
+            label.autoresizingMask = [.width, .height]
+            panel.contentView!.addSubview(label)
+            calibrationPanel = panel
+        }
+        guard let panel = calibrationPanel, let label = panel.contentView?.subviews.first as? NSTextField else { return }
+        label.stringValue = text
+        if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main {
+            let f = screen.visibleFrame
+            panel.setFrameTopLeftPoint(NSPoint(x: f.midX - 260, y: f.maxY - 10))
+        }
+        panel.orderFrontRegardless()
     }
 
     @objc func togglePause() {

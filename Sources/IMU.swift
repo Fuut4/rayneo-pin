@@ -13,8 +13,11 @@ enum GlassesCommand: UInt8 {
     case deviceInfo = 0x00
     case imuOn = 0x01
     case imuOff = 0x02
+    case display3D = 0x06 // side-by-side: the display becomes 3840×1080 @60
+    case display2D = 0x07
     case panel60Hz = 0x20
     case panel120Hz = 0x21
+    case proximitySensor = 0x38 // value 0 keeps the glasses awake when not worn, 1 restores
 }
 
 /// Mean and standard deviation of a block of gyro samples.
@@ -62,6 +65,11 @@ struct Fusion {
     mutating func calibrateOnTable() {
         state = .calibratingOnTable(0)
         block = GyroStats(); blocksOK = 0; tableSum = .zero
+    }
+
+    /// Gives up a table calibration, keeping the previous bias.
+    mutating func cancelCalibration() {
+        if case .calibratingOnTable = state { state = .ready }
     }
 
     mutating func update(acc: SIMD3<Double>, gyro: SIMD3<Double>, tick: UInt32) {
@@ -196,6 +204,8 @@ final class IMU {
         var rate = 0.0 // unique samples per second
         var bias = SIMD3<Double>.zero
         var stillTime = 0.0
+        var proximity = 0.0 // proximity sensor reading
+        var asleep = false // display off because the glasses aren't worn
     }
 
     struct Snapshot {
@@ -206,7 +216,7 @@ final class IMU {
         var ready: Bool { connected && state == .ready }
     }
 
-    /// Called on the IMU thread whenever the glasses (re)connect.
+    /// Called on the IMU thread whenever the glasses (re)connect or wake up.
     var onConnect: (() -> Void)?
 
     private var manager: IOHIDManager!
@@ -286,6 +296,10 @@ final class IMU {
         lock.lock(); fusion.calibrateOnTable(); lock.unlock()
     }
 
+    func cancelCalibration() {
+        lock.lock(); fusion.cancelCalibration(); lock.unlock()
+    }
+
     func send(_ command: GlassesCommand, value: UInt8 = 0) {
         guard let device else { return }
         var frame = [UInt8](repeating: 0, count: 64)
@@ -331,15 +345,21 @@ final class IMU {
             self.raw.acc = acc
             self.raw.gyro = gyro
             self.raw.temperature = f(28)
+            self.raw.proximity = f(44)
             if now.timeIntervalSince(rateStart) >= 1 {
                 self.raw.rate = Double(rateCount) / now.timeIntervalSince(rateStart)
                 rateCount = 0
                 rateStart = now
             }
             lock.unlock()
-        case 0x42: // wake notify
-            send(.imuOn)
-            onConnect?()
+        case 0xC8: // acknowledgments; byte 8 carries sleep (0x41) / wake (0x42) notifications
+            if r[8] == 0x41 {
+                lock.lock(); raw.asleep = true; lock.unlock()
+            } else if r[8] == 0x42 {
+                lock.lock(); raw.asleep = false; lock.unlock()
+                send(.imuOn)
+                onConnect?()
+            }
         default:
             break
         }

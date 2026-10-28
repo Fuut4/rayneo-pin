@@ -41,4 +41,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setDispatchQueue:(dispatch_queue_t)queue;
 @end
 
+// Private WindowServer call: lets a background app hide the cursor (as used by Cursorcerer,
+// Hammerspoon and others). Needed so the hardware cursor isn't drawn over the pinned screen.
+typedef int CGSConnectionID;
+CGSConnectionID _CGSDefaultConnection(void);
+CGError CGSSetConnectionProperty(CGSConnectionID cid, CGSConnectionID targetCID, CFStringRef key, CFTypeRef value);
+
 NS_ASSUME_NONNULL_END

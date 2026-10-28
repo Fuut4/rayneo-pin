@@ -42,9 +42,14 @@ final class Renderer: NSObject {
 
     let window: NSWindow
     let displayID: CGDirectDisplayID
+    /// The glasses are in side-by-side 3D mode (3840×1080): draw once per eye.
+    let stereo: Bool
     private let metalLayer = CAMetalLayer()
     private let hud = CATextLayer()
     private let devLayer = CATextLayer()
+    // Right-eye copies of the text layers in stereo mode.
+    private let hudRight = CATextLayer()
+    private let devRight = CATextLayer()
     /// Developer overlay text, delivered on the main thread (~10 Hz) for the Mac-side panel.
     var onDeveloperText: ((String) -> Void)?
     private let imu: IMU
@@ -140,6 +145,7 @@ final class Renderer: NSObject {
         self.capture = capture
         self.headphones = headphones
         self.displayID = displayID
+        stereo = screen.frame.width / screen.frame.height > 3
 
         let library = try device.makeLibrary(source: Renderer.shader, options: nil)
         let pd = MTLRenderPipelineDescriptor()
@@ -194,7 +200,8 @@ final class Renderer: NSObject {
         hud.foregroundColor = NSColor(white: 0.9, alpha: 1).cgColor
         hud.contentsScale = scale
         hud.isWrapped = true
-        hud.frame = CGRect(x: 60, y: 40, width: view.bounds.width - 120, height: 70)
+        let eyeWidth = stereo ? view.bounds.width / 2 : view.bounds.width
+        hud.frame = CGRect(x: 60, y: 40, width: eyeWidth - 120, height: 70)
         view.layer!.addSublayer(hud)
 
         devLayer.font = NSFont.monospacedSystemFont(ofSize: 14, weight: .medium)
@@ -206,7 +213,23 @@ final class Renderer: NSObject {
         devLayer.isWrapped = false
         devLayer.frame = CGRect(x: 130, y: view.bounds.height - 110 - 560, width: 1180, height: 560)
         devLayer.isHidden = true
+        if stereo { devLayer.frame = CGRect(x: 40, y: devLayer.frame.minY, width: eyeWidth - 80, height: 560) }
         view.layer!.addSublayer(devLayer)
+        if stereo {
+            for (copy, original) in [(hudRight, hud), (devRight, devLayer)] {
+                copy.font = original.font
+                copy.fontSize = original.fontSize
+                copy.alignmentMode = original.alignmentMode
+                copy.foregroundColor = original.foregroundColor
+                copy.backgroundColor = original.backgroundColor
+                copy.cornerRadius = original.cornerRadius
+                copy.contentsScale = scale
+                copy.isWrapped = original.isWrapped
+                copy.isHidden = original.isHidden
+                copy.frame = original.frame.offsetBy(dx: eyeWidth, dy: 0)
+                view.layer!.addSublayer(copy)
+            }
+        }
 
         window.orderFrontRegardless()
 
@@ -418,7 +441,7 @@ final class Renderer: NSObject {
         devHead = head
         if p.developer { developerOverlay(s, airpods: airpods, pose: pose, usingAirPods: usingAirPods, p: p,
                                           cpu: CACurrentMediaTime() - frameStart, now: frameStart) }
-        else if devShown { devShown = false; DispatchQueue.main.async { self.devLayer.isHidden = true } }
+        else if devShown { devShown = false; DispatchQueue.main.async { self.devLayer.isHidden = true; self.devRight.isHidden = true } }
     }
 
     // MARK: Developer overlay
@@ -454,7 +477,8 @@ final class Renderer: NSObject {
         lines.append(String(format: "RAYNEOPIN DEVELOPER   render %5.1f fps   frame work %.2f ms   tracking: %@",
                             devFPS, devCPU * 1000, p.tracking.title))
         lines.append("")
-        lines.append("GLASSES IMU   " + (s.connected ? String(format: "%3.0f Hz · %@ · %.1f °C", raw.rate, state, raw.temperature) : "not connected"))
+        lines.append("GLASSES IMU   " + (s.connected ? String(format: "%3.0f Hz · %@ · %.1f °C · proximity %.0f%@", raw.rate, state, raw.temperature,
+                                                                  raw.proximity, raw.asleep ? " · ASLEEP (not worn)" : "") : "not connected"))
         lines.append("  gyro °/s    " + v(raw.gyro) + "   |ω| " + String(format: "%.2f", simd_length(s.omega) * 180 / .pi))
         lines.append("  bias °/s    " + v(raw.bias) + "   still " + String(format: "%.1f s", raw.stillTime))
         lines.append("  accel m/s²  " + v(raw.acc, 1) + "   |a| " + String(format: "%.2f", simd_length(raw.acc)))
@@ -503,6 +527,8 @@ final class Renderer: NSObject {
             CATransaction.setDisableActions(true)
             self.devLayer.string = text
             self.devLayer.isHidden = false
+            self.devRight.string = text
+            self.devRight.isHidden = !self.stereo
             CATransaction.commit()
             self.onDeveloperText?(text)
         }
@@ -545,6 +571,7 @@ final class Renderer: NSObject {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
             self.hud.string = text
+            self.hudRight.string = text
             CATransaction.commit()
         }
     }
@@ -578,15 +605,21 @@ final class Renderer: NSObject {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         guard let enc = cb.makeRenderCommandEncoder(descriptor: pass) else { return }
         if let tex = mipTexture {
-            var mvp = [matrix(head: head, params: p, drawable: drawable.texture),
-                       matrix(head: headBottom, params: p, drawable: drawable.texture)]
+            let w = Double(drawable.texture.width), h = Double(drawable.texture.height)
+            // Side-by-side: each eye gets half the panel with the same view (flat screen, no parallax).
+            let eyes = stereo ? [0.0, w / 2] : [0.0]
+            let eyeW = stereo ? w / 2 : w
             var sharpness = Float(p.sharpness)
             enc.setRenderPipelineState(pipeline)
-            enc.setVertexBytes(&mvp, length: MemoryLayout<simd_float4x4>.stride * 2, index: 0)
             enc.setFragmentBytes(&sharpness, length: MemoryLayout<Float>.stride, index: 0)
             enc.setFragmentTexture(tex, index: 0)
             enc.setFragmentSamplerState(sampler, index: 0)
-            enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            for x in eyes {
+                enc.setViewport(MTLViewport(originX: x, originY: 0, width: eyeW, height: h, znear: 0, zfar: 1))
+                var mvp = [matrix(head: head, params: p, view: (eyeW, h)), matrix(head: headBottom, params: p, view: (eyeW, h))]
+                enc.setVertexBytes(&mvp, length: MemoryLayout<simd_float4x4>.stride * 2, index: 0)
+                enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            }
         }
         enc.endEncoding()
         cb.present(drawable)
@@ -603,14 +636,15 @@ final class Renderer: NSObject {
     }
 
     /// Projection * camera (inverse head rotation) * screen placed 1 m in front of the anchor.
-    private func matrix(head: simd_quatd, params p: Params, drawable: MTLTexture) -> simd_float4x4 {
-        let w = Double(drawable.width), h = Double(drawable.height)
+    private func matrix(head: simd_quatd, params p: Params, view size: (Double, Double)) -> simd_float4x4 {
+        let (w, h) = size
         let halfDiag = tan(p.fovDiagonal * .pi / 360)
         let halfW = halfDiag * w / sqrt(w * w + h * h)
         let halfH = halfDiag * h / sqrt(w * w + h * h)
 
         let distance = 1.0
-        let width = 2 * distance * halfW * Renderer.baseWidth * zoom
+        // Same pixel density whatever the shape: a 32:9 desktop is twice as wide as a 16:9 one.
+        let width = 2 * distance * halfW * Renderer.baseWidth * zoom * max(aspect / (16.0 / 9.0), 1)
         let height = width / aspect
 
         let near = 0.05, far = 100.0

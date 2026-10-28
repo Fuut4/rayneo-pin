@@ -1,174 +1,184 @@
 # RayNeoPin
 
-**3DoF spatial screen pinning for RayNeo Air 4 Pro glasses on macOS.**
+Head-tracked (3DoF) screen pinning for **RayNeo Air 4 Pro** glasses on macOS.
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-fuut4-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fuut4)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-RayNeo doesn't ship head tracking for the Air 4 Pro on Mac. The glasses do have an IMU, though, and it speaks plain USB HID. RayNeoPin reads that sensor and gives you an extra monitor that stays fixed in space while you turn your head. You end up with two screens: your Mac's, and a pinned one in the glasses.
+RayNeo ships no head tracking for the Air 4 Pro on Mac. RayNeoPin reads the glasses' IMU over USB and keeps the glasses' screen fixed in space while you turn your head. It's a native menu-bar app with no drivers or dependencies, and it runs over a single USB-C cable.
 
-> 🤖 **Made by Claude.** This project was written by [Claude](https://claude.com/claude-code) (Anthropic's AI model) in Claude Code, at [@Fuut4](https://github.com/Fuut4)'s request. In one session Claude worked out the HID protocol on real hardware, wrote the sensor fusion and renderer, and verified the result on the glasses. Expect rough edges. Issues and pull requests are very welcome.
-
-## Features
-
-- Native Swift menu-bar app. No dependencies, no drivers, one USB-C cable.
-- **Extra virtual monitor** (*RayNeoPin Display*, 1080p, 1080p HiDPI, or 1440p, at 120 Hz) pinned in space. The glasses' own display is fenced off, so the cursor never gets lost there.
-- You can also mirror an existing display, or pin **a single window**, instead.
-- **120 Hz**: the app switches the glasses' panel to 120 Hz and renders with Metal on the glasses' vsync, with no tearing.
-- Mipmapped sRGB sampling keeps text crisp and avoids moiré when the screen is scaled.
-- The IMU is read at ~500 Hz and fused with a Mahony-style filter. Motion prediction and late-latched poses cut lag, and motion-adaptive smoothing keeps text still when your head is.
-- **Drift control:**
-  - the gyro bias is saved between launches;
-  - a precise *Calibrate Gyro* runs with the glasses on a table;
-  - continuous bias tracking (x-io Fusion style);
-  - optional slow auto drift correction toward where you look.
-- **AirPods head tracking:** works with AirPods Pro (all), AirPods 3 & 4, AirPods Max and Beats Fit Pro. Under **Head Tracking Source** you choose:
-  - *Glasses Only*;
-  - *AirPods Only*;
-  - *Glasses + AirPods*: the AirPods' heading keeps the glasses' heading from drifting.
-- **Switch between AirPods:** pick any paired pair under **AirPods**. The app shows each pair's model and whether it supports head tracking, then connects it and makes it your sound output, because that's what macOS head tracking follows. The axis mapping is learned from your own head movements, so no per-model tables are needed.
-- **Steady image:** micro-movements under 0.1° (heartbeat, breathing) are ignored, without the image ever jumping.
-- **Crisp resolution:** the virtual monitor changes resolution with the zoom, so one desktop pixel is one glasses pixel and text stays sharp at any size. There's also an adjustable sharpening filter.
-- **Per-axis locks:** lock yaw, pitch and roll independently. A locked axis follows your head; the rest stays pinned.
-- **Developer mode** (⌃⌥D): live data inside the glasses, and optionally on the Mac. It shows:
-  - raw gyro, accelerometer, bias and rest state;
-  - AirPods rate, bursts, Bluetooth delay and calibration;
-  - every stage of the pose pipeline;
-  - display and capture info.
-- Smooth zoom, adjustable FOV, recenter.
-- Global hotkeys. They use Carbon, so they need no Accessibility permission.
+Written by [Claude](https://claude.com/claude-code) (Anthropic) in Claude Code, for [@Fuut4](https://github.com/Fuut4).
 
 ## Requirements
 
-- Apple Silicon Mac, macOS 14 or later. Tested on macOS 15.7 with a MacBook Pro.
-- RayNeo Air 4 Pro (USB `1bbb:af50`). Other RayNeo Air models that use the same protocol may work. Reports are welcome.
-- Xcode Command Line Tools (`xcode-select --install`) to build.
+- Apple Silicon Mac, macOS 14 or later (tested on 15.7).
+- RayNeo Air 4 Pro (USB `1bbb:af50`). Other RayNeo Air models may work; please report results.
+- Xcode Command Line Tools (`xcode-select --install`).
+- Optional: AirPods with head tracking, as a second sensor.
 
-## Install
+## Install and update
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | zsh
 ```
 
-The installer clones the source to `~/Library/Application Support/RayNeoPin/src`, builds it, installs `RayNeoPin.app` to `/Applications`, and launches it.
+This builds the app into `/Applications/RayNeoPin.app` and launches it. To update, use **Check for Updates…** in the menu or run the command again. It does nothing if you're already up to date; pass `--force` to rebuild anyway.
 
-**To update:** choose **Check for Updates…** in the menu-bar icon, or run the same command again. Either way it pulls, rebuilds, reinstalls, and relaunches. It does nothing if you're already up to date; pass `--force` to rebuild anyway.
+**First run**
 
-1. Plug in the glasses. They show up as an extended display named *SmartGlasses*.
-2. Launch the app. Allow **Screen & System Audio Recording** for RayNeoPin (System Settings → Privacy & Security). The app opens that pane for you and starts once the permission is on. If it stays black, quit and reopen it.
+1. Allow **Screen & System Audio Recording** for RayNeoPin. The app opens the settings pane and relaunches itself once access is granted.
+2. Keep your head still for one second while the gyro calibrates.
+3. Optional: run **Calibrate Gyro (glasses on a table)…** once. The glasses can be off your head; see [Calibration](#calibration).
 
-   > **Keeping the permission across updates:** macOS ties the permission to the code signature. `build.sh` signs with your first *Apple Development* certificate if you have one, and then the permission survives updates. Free Apple ID certificates from Xcode work. Without a certificate the build is ad-hoc signed, and you'll need to re-enable the permission after each update. To pick a specific identity, set `SIGN_ID="…"`.
-3. Keep your head still for about 1 second while the gyro calibrates. The screen appears centered where you're looking.
-4. For the least drift, put the glasses on a table and choose **Calibrate Gyro (glasses on a table)…** once. The result is saved.
-5. Optional: wear your AirPods and allow motion access when macOS asks. Turn your head left and right a couple of times so the app learns how the AirPods line up with the glasses. **Head Tracking Source** then shows *AirPods: active*. To use different AirPods, pick them under **AirPods**.
+The permission is tied to the code signature. `build.sh` signs with your first *Apple Development* certificate (a free Apple ID certificate from Xcode works), so the permission survives updates. Ad-hoc builds need it granted again after every update.
 
-By default the pinned screen is a new virtual monitor, placed above your Mac's screen in the display arrangement. Move windows onto it as you would with any monitor. To mirror an existing display or pin one window instead, use **Source** in the menu.
+## Display setups
 
-### Hotkeys
+Choose a setup under **Source**.
 
-| Keys | Action |
+| Setup | Displays in macOS | Desktop | Refresh |
+|---|---|---|---|
+| **Glasses Screen** (default) | Mac + glasses | 1920×1080 (16:9) | 120 Hz |
+| **Glasses Screen Ultrawide** | Mac + glasses | 3840×1080 (32:9), using the glasses' 3D mode | 60 Hz |
+| **Virtual Display** | Mac + glasses + virtual | 960–3840 px wide, follows the zoom | 120 Hz |
+| **Mirror** a display or window | unchanged | that display or window | — |
+
+- **Glasses Screen:** you work on the glasses' own desktop, placed above the Mac's screen in the display arrangement. RayNeoPin captures it and redraws it fixed in space. The hardware cursor is hidden while it's over the glasses; the pinned image shows the cursor instead.
+- **Ultrawide:** switches the glasses to side-by-side mode, so macOS sees one 3840×1080 display. It is rendered once per eye, as a screen twice as wide as your field of view. The glasses only offer 32:9; 32:10 isn't available as a single display.
+- **Virtual Display:** a separate virtual monitor; the glasses' own display is kept off-limits to the cursor. Its **Resolution** setting is *Crisp* by default (desktop pixels map 1:1 to glasses pixels at any zoom), or a fixed size.
+
+## Head tracking
+
+Choose under **Head Tracking Source**.
+
+| Source | Use |
+|---|---|
+| **Glasses + AirPods** (recommended) | The glasses' IMU (500 Hz, wired) for motion, and the AirPods' heading to cancel yaw drift |
+| **Glasses Only** | No AirPods |
+| **AirPods Only** | The AirPods' attitude only. Higher latency (~25 Hz over Bluetooth), extrapolated to the display time |
+
+**AirPods** lists your paired headphones with their model and head-tracking support. Head tracking works on AirPods Pro (all), AirPods 3 and 4, AirPods Max and Beats Fit Pro. Picking one connects it and makes it the sound output, because CoreMotion follows the current output.
+
+The AirPods are calibrated automatically from normal head movement: turn your head left and right, and nod. The result is saved per pair. **Recalibrate AirPods** starts over.
+
+## Controls
+
+| Hotkey | Action |
 |---|---|
 | ⌃⌥R | Recenter |
 | ⌃⌥T | Pause tracking (screen follows the head) |
-| ⌃⌥Y / ⌃⌥P / ⌃⌥E | Lock yaw / pitch / roll |
-| ⌃⌥I / ⌃⌥O | Zoom in / out |
-| ⌃⌥0 | Reset zoom |
+| ⌃⌥Y / ⌃⌥P / ⌃⌥E | Lock yaw / pitch / roll (that axis follows the head) |
+| ⌃⌥I / ⌃⌥O / ⌃⌥0 | Zoom in / out / reset |
 | ⌃⌥L / ⌃⌥K | FOV +1° / −1° |
+| ⌃⌥D | Developer mode: live sensor and pipeline data in the glasses |
 | ⌃⌥Q | Quit |
 
-The hotkeys use letter keys, so they work on any keyboard layout.
+The menu also has:
 
-If the screen "swims" (slides in the same direction you turn) instead of staying put, tune the FOV with ⌃⌥L / ⌃⌥K. The default is 46° diagonal.
+- **Steady Image:** ignores movements under 0.1°, such as heartbeat and breathing.
+- **Auto Drift Correction:** slowly recenters toward your average gaze. Off by default.
+- **Sharpness**, **Glasses at 120 Hz**, and **Also Show Developer Data on the Mac**.
 
-### Build from source (for development)
+## Calibration
 
-```bash
-git clone https://github.com/Fuut4/rayneo-pin.git
-cd rayneo-pin
-./build.sh && open RayNeoPin.app
-```
+**Gyro (glasses on a table).** The glasses turn their display off when not worn. RayNeoPin disables the proximity sensor for the duration, so the IMU keeps streaming, then restores it.
 
-### Debugging
+1. Choose **Calibrate Gyro (glasses on a table)…**. You hear a tick and a progress window appears on the Mac.
+2. Put the glasses down and don't touch them. It needs about 3 s of stillness and gives up after 90 s.
+3. A chime means done; a low tone means it failed and the previous calibration is kept.
 
-```bash
-# Print fused orientation to the terminal, no rendering
-./RayNeoPin.app/Contents/MacOS/RayNeoPin --imu-test
+The bias is saved and refined automatically whenever the glasses are at rest.
 
-# Let screenshots see the glasses window (it's hidden from capture by default)
-RAYNEOPIN_DEBUG=1 ./RayNeoPin.app/Contents/MacOS/RayNeoPin
+**FOV.** If the screen slides in the direction you turn instead of staying put, adjust with ⌃⌥L / ⌃⌥K. The default is 43° diagonal.
 
-# Paired AirPods, their model and head tracking support (* = current sound output)
-./RayNeoPin.app/Contents/MacOS/RayNeoPin --list-headphones
+## Troubleshooting
 
-# Dump raw HID reports
-swiftc -O tools/probe.swift -o probe && ./probe 3 --enable
-```
+| Symptom | Fix |
+|---|---|
+| Glasses show a permission message | Enable RayNeoPin in System Settings › Privacy & Security › Screen & System Audio Recording |
+| Screen drifts sideways over time | Run the table calibration, or use Glasses + AirPods |
+| Screen swims when turning | Adjust the FOV (⌃⌥L / ⌃⌥K) |
+| AirPods unused | Check the menu (*Head Tracking Source*); allow Motion & Fitness; make them the sound output under **AirPods** |
+| Anything else | Turn on developer mode (⌃⌥D) and include its data in an issue |
 
 ## How it works
 
-### HID protocol
+### Glasses protocol
 
-The glasses expose a vendor HID interface: usage page `0xFF00`, with 64-byte input and output reports. Every frame follows the same layout:
+The glasses use a vendor HID interface (usage page `0xFF00`) with 64-byte reports. Host→glasses frames start `0x66 cmd value`; glasses→host frames start `0x99 type`.
 
-| Direction | Byte 0 | Byte 1 | Byte 2 | Rest |
-|---|---|---|---|---|
-| Host → glasses | `0x66` | command | value | payload |
-| Glasses → host | `0x99` | type | | data |
+| Command | Effect |
+|---|---|
+| `0x01` / `0x02` | IMU on / off |
+| `0x06` / `0x07` | 3D side-by-side (3840×1080 @60) / 2D |
+| `0x20` / `0x21` | Panel 60 / 120 Hz |
+| `0x38 0` / `0x38 1` | Proximity sensor off / on |
+| `0x00` | Device info |
 
-- Command `0x01` turns the IMU on and `0x02` turns it off. The app sends `0x01` on connect and on wake (notify `0x42`), and sends `0x02` on quit.
-- Command `0x21` switches the panel to 120 Hz, and `0x20` back to 60 Hz. After `0x21` the display starts advertising 1920×1080 @120 modes, and the app selects one.
-- IMU frames have type `0x65`, all values little-endian:
-  - accelerometer in m/s² as `float[3]` at offset 4
-  - gyro in **deg/s** as `float[3]` at offset 16
-  - tick as `uint32` at offset 40, in **100 µs** units
-- The device frame is x right, y up, z toward the face.
+IMU frames have type `0x65`, little-endian:
 
-Protocol knowledge comes from [verncat/RayNeo-Air-3S-Pro-OpenVR](https://github.com/verncat/RayNeo-Air-3S-Pro-OpenVR) (MIT). The units and timing were verified on an Air 4 Pro. Some ports use a `0xAA` magic byte; the Air 4 Pro ignores it.
+| Offset | Field |
+|---|---|
+| 4 | accelerometer, `float[3]`, m/s² |
+| 16 | gyro, `float[3]`, °/s |
+| 28 | temperature, °C |
+| 40 | tick, `uint32`, 100 µs |
+| 44 | proximity |
 
-### Sensor fusion and accuracy
+Sleep and wake arrive as ack frames (`0xC8`) with `0x41` / `0x42` at byte 8. The device frame is x right, y up, z toward the face. The protocol comes from [verncat/RayNeo-Air-3S-Pro-OpenVR](https://github.com/verncat/RayNeo-Air-3S-Pro-OpenVR), and every value above was verified on an Air 4 Pro.
 
-| Problem | What RayNeoPin does | Based on |
-|---|---|---|
-| Gyro bias | Startup calibration, a precise on-table calibration, and the bias saved between launches. Rest detection compares the gyro with its own low-pass instead of with zero (VQF). On a head, only small corrections (< 0.6 °/s) are accepted, so slow head turns are never absorbed as bias. | [dlaidig/vqf](https://github.com/dlaidig/vqf), [x-io Fusion](https://github.com/xioTechnologies/Fusion) |
-| Pitch/roll | Mahony complementary filter toward gravity | Mahony et al. |
-| Motion-to-photon latency | Late latching: wait for a drawable, then read the pose. Look-ahead is 10 ms + 0.45 × frame time; the bottom row gets +7 ms more, because the panel scans out top to bottom. | [wheaney/XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) RayNeo values |
-| FOV | 43° diagonal default | XRLinuxDriver RayNeo |
-| Micro-movements (heartbeat) | Soft 0.1° dead zone that never jumps, and motion-adaptive smoothing | [OpenTrack Accela](https://github.com/opentrack/opentrack), AirAnchor |
-| AirPods sit tilted in the ears | Full 3-D rotation between the AirPods' and the glasses' body frames, solved from paired angular velocities (Wahba's problem, Davenport q-method) | — |
-| Bluetooth latency and bursts (~25 Hz, bursts of 2–4, ~30 ms) | Sensor timestamps instead of arrival times. The clock offset is found by correlating rotation speeds, which works whatever the axes. Headings are compared at the instant each sample was measured, against a 5 s pose history of the glasses. | — |
-| CMAttitude quaternion convention | Detected by comparing quaternion deltas with the AirPods' own gyro | — |
-| Bud swap / reseating | Detected as jumps; the world alignment is redone, and the app falls back to the glasses meanwhile | — |
+### Sensor fusion
 
-The AirPods calibration (ear tilt, convention, latency) is saved per pair, so the next session starts calibrated.
+| Stage | Method |
+|---|---|
+| Orientation | Mahony complementary filter: gyro integration, gravity correction for pitch/roll |
+| Gyro bias | Startup and table calibration, the value saved across launches, and rest-based refinement after [VQF](https://github.com/dlaidig/vqf) (gyro within 2 °/s of its 0.5 s low-pass, accelerometer within 0.5 m/s², ≥1.5 s). Unlike VQF, only corrections under 0.6 °/s are accepted, so slow head turns are not absorbed. |
+| Latency | Late latching (pose read after the drawable is acquired). Look-ahead is 10 ms + 0.45 × frame time, plus 7 ms for the bottom row (panel scan-out), as tuned in [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) for RayNeo. |
+| Micro-movements | 0.1° soft dead zone and motion-adaptive smoothing (cf. [OpenTrack Accela](https://github.com/opentrack/opentrack), [AirAnchor](https://github.com/jief123/AirAnchor)) |
+| AirPods ↔ glasses | Clock offset from rotation-speed correlation. Quaternion convention checked against `rotationRate`. Ear-mount rotation solved from paired angular velocities (Wahba's problem, Davenport q-method), plus a world-frame alignment. Headings are compared at each sample's own timestamp against a 5 s glasses pose history. Bud swaps are detected as jumps. |
 
 ### Rendering
 
-A borderless black window covers the glasses display; black renders as transparent on the optics. A `CAMetalLayer` with display sync and two drawables is driven by a display link on its own thread, at 120 Hz.
+A borderless window covers the glasses' display (black is transparent on the optics). Metal renders on its own thread, synced to the panel's vsync, with two drawables. Each ScreenCaptureKit frame is copied into a mipmapped sRGB texture; the source buffer is retained until the GPU finishes, which prevents tearing. The texture is drawn as a quad 1 m in front of the anchor, with an unsharp mask. Our own windows are excluded from the capture.
 
-Each new ScreenCaptureKit frame is copied into a mipmapped sRGB texture. The source pixel buffer is retained until the GPU finishes with it, which prevents tearing. The frame is drawn as a quad 1 m in front of the anchor, through a perspective projection derived from the glasses' FOV.
+## Development
 
-The virtual monitor uses the private `CGVirtualDisplay` API, the same one DeskPad, BetterDisplay and AirAnchor use.
+```bash
+git clone https://github.com/Fuut4/rayneo-pin.git && cd rayneo-pin
+./build.sh && open RayNeoPin.app
+```
 
-Several ideas were borrowed from [AirAnchor](https://github.com/jief123/AirAnchor) (XREAL on macOS): the mipmapped sRGB pipeline, motion-adaptive smoothing, and gaze-based drift correction. The gyro offset tracking follows [x-io Fusion](https://github.com/xioTechnologies/Fusion).
+| Path | Contents |
+|---|---|
+| `Sources/IMU.swift` | HID protocol, fusion, bias, pose history |
+| `Sources/Headphones.swift` | AirPods motion, calibration, device picker |
+| `Sources/Renderer.swift` | Metal renderer, pose pipeline, developer overlay |
+| `Sources/Displays.swift` | Glasses display, virtual display, arrangement, cursor |
+| `Sources/Capture.swift` | ScreenCaptureKit capture |
+| `Sources/App.swift` | Menu, settings, setups, calibration flow |
+| `tools/probe.swift` | Raw HID dump |
 
-## Known limitations / ideas for contributions
+Command-line flags:
 
-- **Yaw drift.** Bias tracking and auto drift correction keep the heading close, but there is no absolute heading reference. Magnetometer fusion is an open idea; the values are in the packet at offsets 32, 36 and 52.
-- **Single screen.** Multiple pinned monitors, or a curved screen, would be nice.
-- **Calibration.** A FOV and IPD calibration wizard. The 46° default is a guess.
-- **Side-by-side 3D mode** (3840×1080) is not handled.
-- **Packaging.** A signed and notarized release, so users don't have to build it themselves.
-- Only tested on one Air 4 Pro. Please report other models.
+| Flag | Output |
+|---|---|
+| `--imu-test` | Fused orientation and AirPods yaw in the terminal |
+| `--list-headphones` | Paired AirPods, their model and head-tracking support |
+| `RAYNEOPIN_DEBUG=1` | Lets screenshots capture the glasses window |
+
+Open work:
+
+- Magnetometer fusion for absolute heading.
+- Multiple pinned screens.
+- A signed, notarized release.
+- Reports from other RayNeo models.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Support
 
-Claude wrote every line of this. Claude works for tokens, and [@Fuut4](https://github.com/Fuut4) pays for the tokens.
-
-**[☕ Buy Fuut4 a coffee](https://buymeacoffee.com/fuut4) so Claude can keep its job.** It's also in the app's menu, right above *Check for Updates…*.
-
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Claude writes the code; Fuut4 pays for the tokens. [Buy Fuut4 a coffee](https://buymeacoffee.com/fuut4) so Claude keeps its job.
 
 ## License
 
-[MIT](LICENSE). Not affiliated with RayNeo / TCL.
+[MIT](LICENSE). Not affiliated with RayNeo or TCL.
