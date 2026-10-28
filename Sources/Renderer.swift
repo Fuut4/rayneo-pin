@@ -115,7 +115,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         // Readability
         var sharpenStyle = SharpenStyle.rcas
         var motionSharpen = true // full sharpening when still, none while turning (no crawling)
-        var smartFilter = true // Catmull-Rom when magnified, RGSS when minified
+        var smartFilter = true // Catmull-Rom near 1:1 and when magnified, RGSS when shrunk further
         var pixelLock = true // still + ~1:1 scale: draw exactly on the pixel grid
         var curved = true // ultrawide screens bend around you
         var warmth = 0.0 // 0…1, less blue light
@@ -299,7 +299,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         return o;
     }
 
-    // Bicubic Catmull-Rom in 9 bilinear taps (TheRealMJP): sharper than bilinear when magnifying.
+    // Bicubic Catmull-Rom in 9 bilinear taps (TheRealMJP): sharper than bilinear.
     float4 catmullRom(texture2d<float> tex, sampler s, float2 uv) {
         float2 size = float2(tex.get_width(), tex.get_height());
         float2 pos = uv * size;
@@ -330,8 +330,11 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
 
     float4 base(texture2d<float> tex, sampler s, float2 uv, float2 dx, float2 dy, constant Look &lk) {
         if (lk.exact > 0.5) return tex.sample(s, uv, level(0));
-        if (lk.sampling == 1 && lk.texelsPerPixel < 0.95) return catmullRom(tex, s, uv);
-        if (lk.sampling == 1 && lk.texelsPerPixel > 1.05) {
+        // Up to 1.6 texels per pixel, bicubic keeps strokes crisp where bilinear smears them across
+        // two pixels (any sub-pixel placement, i.e. whenever the head moves); beyond that it would
+        // alias, so the rotated grid takes over.
+        if (lk.sampling == 1 && lk.texelsPerPixel <= 1.6) return catmullRom(tex, s, uv);
+        if (lk.sampling == 1) {
             // Rotated-grid 4× supersampling over the pixel footprint: less moiré when shrinking.
             gradient2d g(dx * 0.5, dy * 0.5);
             return 0.25 * (tex.sample(s, uv + 0.125 * dx + 0.375 * dy, g) + tex.sample(s, uv + 0.375 * dx - 0.125 * dy, g)

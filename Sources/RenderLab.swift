@@ -65,7 +65,8 @@ enum RenderLab {
             for source in sources {
                 let native = nativeImage(theme, source)
                 let nativeStats = stats(native, theme)
-                save(crop(native), output.appendingPathComponent("\(theme.name)-\(source.name)-0-native.png"))
+                let at = textPixel(source)
+                save(crop(native, at), output.appendingPathComponent("\(theme.name)-\(source.name)-0-native.png"))
                 for v in variants {
                     if v.lock, source.logical.w != 1600 || source.scale != 1 { continue }
                     guard let img = render(device, queue, theme, source, v) else { print("render failed"); continue }
@@ -74,7 +75,7 @@ enum RenderLab {
                                       blur: s.half / max(nativeStats.half, 1e-9), ring: s.ring * 1000)
                     let label = "\(theme.name) \(source.name) \(v.name)"
                     rows.append((label, score))
-                    save(crop(img), output.appendingPathComponent(label.replacingOccurrences(of: " ", with: "-") + ".png"))
+                    save(crop(img, at), output.appendingPathComponent(label.replacingOccurrences(of: " ", with: "-") + ".png"))
                 }
             }
         }
@@ -272,9 +273,16 @@ enum RenderLab {
 
     // MARK: Output
 
+    /// Where the text block starts in the eye image.
+    static func textPixel(_ source: Source) -> (Int, Int) {
+        let r = screenRect(aspect: Double(source.logical.w) / Double(source.logical.h))
+        let k = r.width / CGFloat(source.logical.w)
+        return (Int(r.minX + textOrigin.x * k) - 6, Int(r.minY + textOrigin.y * k) - 4)
+    }
+
     /// 3× nearest-neighbour zoom of a patch of text, for looking at.
-    static func crop(_ p: [UInt8]) -> CGImage {
-        let (cx, cy, cw, ch, z) = (340, 270, 360, 130, 3)
+    static func crop(_ p: [UInt8], _ at: (Int, Int)) -> CGImage {
+        let (cx, cy, cw, ch, z) = (at.0, at.1, 300, 110, 3)
         let ctx = CGContext(data: nil, width: cw * z, height: ch * z, bitsPerComponent: 8, bytesPerRow: cw * z * 4,
                             space: CGColorSpace(name: CGColorSpace.sRGB)!,
                             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)!
