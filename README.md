@@ -29,6 +29,11 @@ RayNeo doesn't ship head tracking for the Air 4 Pro on Mac. The glasses do have 
 - **Steady image:** micro-movements under 0.1° (heartbeat, breathing) are ignored, without the image ever jumping.
 - **Crisp resolution:** the virtual monitor changes resolution with the zoom, so one desktop pixel is one glasses pixel and text stays sharp at any size. There's also an adjustable sharpening filter.
 - **Per-axis locks:** lock yaw, pitch and roll independently. A locked axis follows your head; the rest stays pinned.
+- **Developer mode** (⌃⌥D): live data inside the glasses, and optionally on the Mac. It shows:
+  - raw gyro, accelerometer, bias and rest state;
+  - AirPods rate, bursts, Bluetooth delay and calibration;
+  - every stage of the pose pipeline;
+  - display and capture info.
 - Smooth zoom, adjustable FOV, recenter.
 - Global hotkeys. They use Carbon, so they need no Accessibility permission.
 
@@ -118,6 +123,22 @@ The glasses expose a vendor HID interface: usage page `0xFF00`, with 64-byte inp
 - The device frame is x right, y up, z toward the face.
 
 Protocol knowledge comes from [verncat/RayNeo-Air-3S-Pro-OpenVR](https://github.com/verncat/RayNeo-Air-3S-Pro-OpenVR) (MIT). The units and timing were verified on an Air 4 Pro. Some ports use a `0xAA` magic byte; the Air 4 Pro ignores it.
+
+### Sensor fusion and accuracy
+
+| Problem | What RayNeoPin does | Based on |
+|---|---|---|
+| Gyro bias | Startup calibration, a precise on-table calibration, and the bias saved between launches. Rest detection compares the gyro with its own low-pass instead of with zero (VQF). On a head, only small corrections (< 0.6 °/s) are accepted, so slow head turns are never absorbed as bias. | [dlaidig/vqf](https://github.com/dlaidig/vqf), [x-io Fusion](https://github.com/xioTechnologies/Fusion) |
+| Pitch/roll | Mahony complementary filter toward gravity | Mahony et al. |
+| Motion-to-photon latency | Late latching: wait for a drawable, then read the pose. Look-ahead is 10 ms + 0.45 × frame time; the bottom row gets +7 ms more, because the panel scans out top to bottom. | [wheaney/XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) RayNeo values |
+| FOV | 43° diagonal default | XRLinuxDriver RayNeo |
+| Micro-movements (heartbeat) | Soft 0.1° dead zone that never jumps, and motion-adaptive smoothing | [OpenTrack Accela](https://github.com/opentrack/opentrack), AirAnchor |
+| AirPods sit tilted in the ears | Full 3-D rotation between the AirPods' and the glasses' body frames, solved from paired angular velocities (Wahba's problem, Davenport q-method) | — |
+| Bluetooth latency and bursts (~25 Hz, bursts of 2–4, ~30 ms) | Sensor timestamps instead of arrival times. The clock offset is found by correlating rotation speeds, which works whatever the axes. Headings are compared at the instant each sample was measured, against a 5 s pose history of the glasses. | — |
+| CMAttitude quaternion convention | Detected by comparing quaternion deltas with the AirPods' own gyro | — |
+| Bud swap / reseating | Detected as jumps; the world alignment is redone, and the app falls back to the glasses meanwhile | — |
+
+The AirPods calibration (ear tilt, convention, latency) is saved per pair, so the next session starts calibrated.
 
 ### Rendering
 

@@ -14,15 +14,27 @@ import QuartzCore
 import simd
 
 final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
-    /// Euler angles as CoreMotion reports them: (yaw, pitch, roll), radians.
-    struct Sample { var angles: SIMD3<Double>; var time: Double }
+    struct Sample {
+        var q: simd_quatd // CMAttitude quaternion as reported (convention detected later)
+        var rate: SIMD3<Double> // rotationRate, rad/s, AirPods body frame
+        var angles: SIMD3<Double> // CMAttitude (yaw, pitch, roll), for display
+        var time: Double // when it was measured, host clock (sensor timestamp when usable)
+        var arrival: Double // when it reached us
+    }
 
     private let manager = CMHeadphoneMotionManager()
     private let queue = OperationQueue()
     private let lock = NSLock()
     private var last: Sample?
-    private var previous: Sample?
+    private var pending: [Sample] = []
     private(set) var running = false
+    private var rateCount = 0
+    private var rateStart = CACurrentMediaTime()
+    private var measuredRate = 0.0
+    private var burst = 0
+    private var maxBurst = 0
+    private var lastArrival = 0.0
+    private(set) var usesSensorClock = true
 
     var isAvailable: Bool { manager.isDeviceMotionAvailable }
     var isDenied: Bool { CMHeadphoneMotionManager.authorizationStatus() == .denied }
@@ -34,10 +46,31 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
         queue.maxConcurrentOperationCount = 1
         queue.qualityOfService = .userInteractive
         manager.startDeviceMotionUpdates(to: queue) { [weak self] motion, _ in
-            guard let self, let a = motion?.attitude else { return }
+            guard let self, let m = motion else { return }
+            let arrival = CACurrentMediaTime()
+            // CMLogItem.timestamp is seconds since boot, the same clock as CACurrentMediaTime.
+            // If it ever isn't (or is nonsense), fall back to arrival time.
+            let sensorOK = abs(arrival - m.timestamp) < 1
+            let q = m.attitude.quaternion
+            let sample = Sample(q: simd_normalize(simd_quatd(ix: q.x, iy: q.y, iz: q.z, r: q.w)),
+                                rate: SIMD3(m.rotationRate.x, m.rotationRate.y, m.rotationRate.z),
+                                angles: SIMD3(m.attitude.yaw, m.attitude.pitch, m.attitude.roll),
+                                time: sensorOK ? m.timestamp : arrival, arrival: arrival)
             self.lock.lock()
-            self.previous = self.last
-            self.last = Sample(angles: SIMD3(a.yaw, a.pitch, a.roll), time: CACurrentMediaTime())
+            self.usesSensorClock = sensorOK
+            self.last = sample
+            self.pending.append(sample)
+            if self.pending.count > 400 { self.pending.removeFirst(self.pending.count - 400) }
+            // Bluetooth tends to deliver several samples back to back.
+            self.burst = arrival - self.lastArrival < 0.003 ? self.burst + 1 : 1
+            self.maxBurst = max(self.maxBurst, self.burst)
+            self.lastArrival = arrival
+            self.rateCount += 1
+            if arrival - self.rateStart >= 1 {
+                self.measuredRate = Double(self.rateCount) / (arrival - self.rateStart)
+                self.rateCount = 0
+                self.rateStart = arrival
+            }
             self.lock.unlock()
         }
     }
@@ -48,72 +81,240 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
         running = false
     }
 
-    /// Latest two samples, or nil when the AirPods aren't worn/connected.
-    func latest() -> (last: Sample, previous: Sample?)? {
+    /// Latest sample, or nil when the AirPods aren't worn/connected.
+    func latest() -> Sample? {
         lock.lock(); defer { lock.unlock() }
-        guard let last, CACurrentMediaTime() - last.time < 0.3 else { return nil }
-        return (last, previous)
+        guard let last, CACurrentMediaTime() - last.arrival < 0.3 else { return nil }
+        return last
     }
 
-    func latestYaw() -> Double? { latest()?.last.angles.x }
+    func latestYaw() -> Double? { latest()?.angles.x }
+
+    /// Every sample since the previous call, in order.
+    func drain() -> [Sample] {
+        lock.lock(); defer { lock.unlock() }
+        let s = pending
+        pending.removeAll(keepingCapacity: true)
+        return s
+    }
+
+    /// Updates per second over the last second (0 when no data), and the largest back-to-back burst.
+    var stats: (rate: Double, maxBurst: Int) {
+        lock.lock(); defer { lock.unlock() }
+        guard let last, CACurrentMediaTime() - last.arrival < 0.3 else { return (0, maxBurst) }
+        return (measuredRate, maxBurst)
+    }
+
+    var authorization: String {
+        switch CMHeadphoneMotionManager.authorizationStatus() {
+        case .authorized: return "authorized"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        case .notDetermined: return "not asked yet"
+        @unknown default: return "unknown"
+        }
+    }
 
     func headphoneMotionManagerDidDisconnect(_ manager: CMHeadphoneMotionManager) {
-        lock.lock(); last = nil; previous = nil; lock.unlock()
+        lock.lock(); last = nil; pending.removeAll(); lock.unlock()
     }
 }
 
 func wrapAngle(_ a: Double) -> Double { atan2(sin(a), cos(a)) }
 
-/// Learns how AirPods' (yaw, pitch, roll) map onto the glasses' (yaw, pitch, roll) — which axis,
-/// which direction — by correlating real head movements, so no device-specific axis table is needed.
-struct AirPodsAlignment {
-    private var evidence = simd_double3x3() // rows: glasses axis, columns: AirPods axis
-    private var lastA: SIMD3<Double>?
-    private var gAtLastA = SIMD3<Double>.zero
-    // Before there is evidence: same axes, roll mirrored (CoreMotion rolls about the forward axis).
-    private(set) var axis = [0, 1, 2]
-    private(set) var sign: SIMD3<Double> = [1, 1, -1]
-    private(set) var confident = false
+/// Rotation R minimizing Σ|b − R·a|² (Wahba's problem), via Davenport's q-method with power
+/// iteration. Both conventions of the resulting quaternion are tried and the better fit is kept.
+func solveRotation(_ pairs: [(a: SIMD3<Double>, b: SIMD3<Double>)]) -> simd_quatd? {
+    guard pairs.count >= 3 else { return nil }
+    var B = simd_double3x3() // Σ b·aᵀ, element (row i, col j) = B[j][i]
+    var scale = 0.0
+    for (a, b) in pairs {
+        for i in 0..<3 { for j in 0..<3 { B[j][i] += b[i] * a[j] } }
+        scale += simd_length(a) * simd_length(b)
+    }
+    func e(_ i: Int, _ j: Int) -> Double { B[j][i] }
+    let sigma = e(0, 0) + e(1, 1) + e(2, 2)
+    let z = SIMD3(e(1, 2) - e(2, 1), e(2, 0) - e(0, 2), e(0, 1) - e(1, 0))
+    var K = simd_double4x4()
+    for i in 0..<3 { for j in 0..<3 { K[j][i] = e(i, j) + e(j, i) - (i == j ? sigma : 0) } }
+    for i in 0..<3 { K[3][i] = z[i]; K[i][3] = z[i] }
+    K[3][3] = sigma
+    // Largest eigenvector: power iteration on K shifted to be positive definite.
+    let M = K + simd_double4x4(diagonal: SIMD4(repeating: scale))
+    var v = SIMD4<Double>(0.5, 0.5, 0.5, 0.5)
+    for _ in 0..<200 { v = simd_normalize(M * v) }
+    let q = simd_quatd(ix: v.x, iy: v.y, iz: v.z, r: v.w)
+    func residual(_ r: simd_quatd) -> Double { pairs.reduce(0) { $0 + simd_length_squared($1.b - r.act($1.a)) } }
+    return residual(q) <= residual(q.conjugate) ? q : q.conjugate
+}
 
-    /// Call every frame; `g` is the glasses' (yaw, pitch, roll) when available.
-    mutating func observe(glasses g: SIMD3<Double>?, airpods a: SIMD3<Double>) {
-        defer { lastA = a }
-        guard let la = lastA, a != la else { if lastA == nil, let g { gAtLastA = g }; return }
-        guard let g else { return }
-        let dg = SIMD3(wrapAngle(g.x - gAtLastA.x), wrapAngle(g.y - gAtLastA.y), wrapAngle(g.z - gAtLastA.z))
-        let da = SIMD3(wrapAngle(a.x - la.x), wrapAngle(a.y - la.y), wrapAngle(a.z - la.z))
-        gAtLastA = g
-        guard simd_length(dg) > 0.01, simd_length(da) > 0.01 else { return }
-        for i in 0..<3 { for j in 0..<3 { evidence[j][i] += dg[i] * da[j] } }
-        for i in 0..<3 {
-            let row = (0..<3).map { evidence[$0][i] }
-            let j = (0..<3).max { abs(row[$0]) < abs(row[$1]) }!
-            if abs(row[j]) > 0.02 { axis[i] = j; sign[i] = row[j] > 0 ? 1 : -1 }
+/// Learns, from your own head movements, everything needed to turn AirPods attitude into the
+/// glasses' frame:
+///  - `lag`: AirPods sample time → matching glasses time (Bluetooth/clock offset), by correlating
+///    rotation speeds, which doesn't depend on how the axes line up;
+///  - `inverted`: whether CMAttitude's quaternion is body→world or world→body, checked against
+///    the AirPods' own gyro;
+///  - `X`: rotation from the glasses' body frame to the AirPods' (they sit tilted in the ears);
+///  - `W`: rotation from the AirPods' world frame to the glasses'.
+/// Then glasses orientation = W · Ra · X.
+struct AirPodsCalibration {
+    private(set) var lag = 0.0
+    private(set) var lagCorrelation = 0.0
+    private(set) var inverted = false
+    private(set) var X: simd_quatd?
+    private(set) var W: simd_quatd?
+    private(set) var fitError = 1.0 // rms residual / mean rate (0 = perfect)
+    private(set) var pairCount = 0
+    private(set) var jumps = 0
+
+    private var speeds: [(t: Double, w: Double)] = []
+    private var pairs: [(a: SIMD3<Double>, b: SIMD3<Double>)] = []
+    private var lastSample: Headphones.Sample?
+    private var conventionScore = 0.0
+    private var lastLagSolve = 0.0
+    private var newPairs = 0
+    private var xAtW: simd_quatd? // the X that W was computed with
+    private(set) var seeded = false // X/convention/lag came from a previous session
+
+    /// What's worth keeping between sessions for the same AirPods (W depends on the session).
+    struct Saved: Codable { var x: [Double]; var inverted: Bool; var lag: Double }
+
+    var saved: Saved? {
+        guard let X, fitError < 0.3, pairCount >= 120 else { return nil }
+        return Saved(x: [X.vector.x, X.vector.y, X.vector.z, X.vector.w], inverted: inverted, lag: lag)
+    }
+
+    /// Start from a previous session's result; it keeps refining from new movement.
+    mutating func seed(_ s: Saved) {
+        guard s.x.count == 4 else { return }
+        X = simd_normalize(simd_quatd(vector: SIMD4(s.x[0], s.x[1], s.x[2], s.x[3])))
+        inverted = s.inverted
+        conventionScore = s.inverted ? 1 : -1
+        lag = s.lag
+        fitError = 0.2
+        pairCount = 120
+        seeded = true
+    }
+
+    var ready: Bool { X != nil && W != nil && fitError < 0.4 && pairCount >= 120 }
+
+    mutating func reset() { self = AirPodsCalibration() }
+
+    /// Forget only where the AirPods' world is (after a jump, or to re-align).
+    mutating func realign() { W = nil }
+
+    func bodyToWorld(_ s: Headphones.Sample) -> simd_quatd { inverted ? s.q.inverse : s.q }
+
+    /// AirPods sample as the glasses' orientation (nil until calibrated).
+    func pose(_ s: Headphones.Sample) -> simd_quatd? {
+        guard let X, let W else { return nil }
+        return simd_normalize(W * bodyToWorld(s) * X)
+    }
+
+    /// AirPods rotation rate expressed in the glasses' body frame.
+    func rate(_ s: Headphones.Sample) -> SIMD3<Double> { X.map { $0.inverse.act(s.rate) } ?? .zero }
+
+    /// Glasses time matching an AirPods sample.
+    func glassesTime(_ s: Headphones.Sample) -> Double { s.time + lag }
+
+    mutating func ingest(_ samples: [Headphones.Sample], glasses: (Double) -> PoseSample?) {
+        for s in samples {
+            defer { lastSample = s }
+            let speed = simd_length(s.rate)
+            speeds.append((s.time, speed))
+
+            if let prev = lastSample, s.time > prev.time {
+                let dt = s.time - prev.time
+                // A big instant jump means the AirPods switched buds or were reseated.
+                let jump = (prev.q.inverse * s.q).angle
+                if min(jump, 2 * .pi - jump) > 0.5, dt < 0.2 { jumps += 1; W = nil }
+                // Convention: the body rate implied by consecutive quaternions should match rotationRate.
+                if speed > 0.3, dt < 0.1 {
+                    let asBodyToWorld = s.q.angularVelocity(from: prev.q, dt: dt)
+                    let asWorldToBody = s.q.inverse.angularVelocity(from: prev.q.inverse, dt: dt)
+                    conventionScore += simd_dot(asWorldToBody, s.rate) - simd_dot(asBodyToWorld, s.rate)
+                    inverted = conventionScore > 0
+                }
+            }
+
+            guard let g = glasses(glassesTime(s)) else { continue }
+            if speed > 0.3, simd_length(g.omega) > 0.3 {
+                pairs.append((g.omega, s.rate))
+                if pairs.count > 3000 { pairs.removeFirst(pairs.count - 3000) }
+                newPairs += 1
+            }
+            if W == nil, let X, fitError < 0.4 {
+                W = simd_normalize(g.q * X.inverse * bodyToWorld(s).inverse)
+                xAtW = X
+            }
         }
-        confident = abs(evidence[axis[0]][0]) > 0.05 // enough yaw turning seen
+        let newest = speeds.last?.t ?? 0
+        speeds.removeAll { $0.t < newest - 4 }
+
+        if newPairs >= 40 {
+            newPairs = 0
+            pairCount = pairs.count
+            // A seeded X is only replaced once there is as much fresh data as it was built from.
+            if !seeded || pairs.count >= 120, let x = solveRotation(pairs) {
+                let rms = sqrt(pairs.reduce(0) { $0 + simd_length_squared($1.b - x.act($1.a)) } / Double(pairs.count))
+                let mean = pairs.reduce(0) { $0 + simd_length($1.b) } / Double(pairs.count)
+                fitError = rms / max(mean, 1e-6)
+                if X == nil || fitError < 0.4 { X = x }
+                // W depends on X: redo it while X is still improving.
+                if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
+                   2 * .pi - (old.inverse * X).angle > 0.005 { W = nil }
+            }
+        }
+        if let t = speeds.last?.t, t - lastLagSolve > 1 {
+            lastLagSolve = t
+            solveLag(glasses)
+        }
     }
 
-    /// AirPods angles expressed as the glasses' (yaw, pitch, roll).
-    func aligned(_ a: SIMD3<Double>) -> SIMD3<Double> {
-        SIMD3(sign.x * a[axis[0]], sign.y * a[axis[1]], sign.z * a[axis[2]])
+    /// Picks the offset (−50…+300 ms) at which AirPods and glasses rotation speeds correlate best.
+    private mutating func solveLag(_ glasses: (Double) -> PoseSample?) {
+        let recent = speeds.filter { $0.t > (speeds.last?.t ?? 0) - 3 }
+        guard recent.count > 30 else { return }
+        let mean = recent.reduce(0) { $0 + $1.w } / Double(recent.count)
+        let variance = recent.reduce(0) { $0 + ($1.w - mean) * ($1.w - mean) } / Double(recent.count)
+        guard variance > 0.01 else { return } // head too still to tell
+        var best = (lag: lag, r: -1.0)
+        for step in -5...30 {
+            let L = Double(step) * 0.01
+            var xs: [Double] = [], ys: [Double] = []
+            for s in recent { if let g = glasses(s.t + L) { xs.append(s.w); ys.append(simd_length(g.omega)) } }
+            guard xs.count > 20 else { continue }
+            let r = pearson(xs, ys)
+            if r > best.r { best = (L, r) }
+        }
+        if best.r > 0.6 { lag = best.lag; lagCorrelation = best.r }
     }
+}
 
-    func pose(_ a: SIMD3<Double>) -> simd_quatd { .ypr(aligned(a)) }
+func pearson(_ x: [Double], _ y: [Double]) -> Double {
+    let n = Double(x.count)
+    let mx = x.reduce(0, +) / n, my = y.reduce(0, +) / n
+    var sxy = 0.0, sxx = 0.0, syy = 0.0
+    for i in 0..<x.count {
+        sxy += (x[i] - mx) * (y[i] - my)
+        sxx += (x[i] - mx) * (x[i] - mx)
+        syy += (y[i] - my) * (y[i] - my)
+    }
+    return sxx > 0 && syy > 0 ? sxy / sqrt(sxx * syy) : 0
 }
 
 /// Keeps the glasses' heading at a constant offset from the AirPods' heading.
 struct HeadingReference {
     private(set) var correction = 0.0 // rad, applied about world up
-    private var offset: Double?
+    private(set) var offset: Double?
 
     /// Forget the glasses↔AirPods relationship (e.g. after the glasses reconnect).
     mutating func reset() { offset = nil }
 
-    /// `g` is the glasses' uncorrected heading, `a` the aligned AirPods heading.
-    mutating func update(glasses g: Double, airpods a: Double, dt: Double, speed: Double) {
+    /// `g` is the glasses' uncorrected heading and `a` the AirPods heading, at the same instant.
+    mutating func update(glasses g: Double, airpods a: Double, dt: Double) {
         let o = wrapAngle(g + correction - a)
         guard let ref = offset else { offset = o; return }
-        guard speed < 0.5 else { return } // AirPods data lags during fast turns
         correction -= wrapAngle(o - ref) * min(dt / 4, 1)
     }
 }

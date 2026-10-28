@@ -19,7 +19,8 @@ final class Settings {
 
     var zoom: Double { get { double("zoom", 1) } set { d.set(newValue, forKey: "zoom") } }
     /// Diagonal field of view of the glasses. Wrong values make the screen "swim" when turning.
-    var fovDiagonal: Double { get { double("fov", 46) } set { d.set(newValue, forKey: "fov") } }
+    /// 43° is what XRLinuxDriver uses for RayNeo glasses.
+    var fovDiagonal: Double { get { double("fov", 43) } set { d.set(newValue, forKey: "fov") } }
     // Old "yaw only" mode meant pitch and roll locked.
     var lockYaw: Bool { get { bool("lockYaw", false) } set { d.set(newValue, forKey: "lockYaw") } }
     var lockPitch: Bool { get { bool("lockPitch", d.bool(forKey: "yawOnly")) } set { d.set(newValue, forKey: "lockPitch") } }
@@ -32,12 +33,24 @@ final class Settings {
     }
     var sharpness: Double { get { double("sharpness", 0.5) } set { d.set(newValue, forKey: "sharpness") } }
     var highRefresh: Bool { get { bool("highRefresh", true) } set { d.set(newValue, forKey: "highRefresh") } }
+    var developer: Bool { get { bool("developer", false) } set { d.set(newValue, forKey: "developer") } }
+    /// Developer data also in a window on the Mac (off: only in the glasses).
+    var developerOnMac: Bool { get { bool("developerOnMac", false) } set { d.set(newValue, forKey: "developerOnMac") } }
     var resolution: VirtualMonitor.Resolution {
         get { VirtualMonitor.Resolution.allCases.first { "\($0)" == d.string(forKey: "resolutionMode") } ?? .crisp }
         set { d.set("\(newValue)", forKey: "resolutionMode") }
     }
     /// "virtual", or "display"/"window" for mirroring something that already exists.
     var sourceKind: String { get { d.string(forKey: "sourceKind") ?? "virtual" } set { d.set(newValue, forKey: "sourceKind") } }
+    /// AirPods calibration per Bluetooth address.
+    func airPodsCalibration(for address: String) -> AirPodsCalibration.Saved? {
+        (d.data(forKey: "airpods." + address)).flatMap { try? JSONDecoder().decode(AirPodsCalibration.Saved.self, from: $0) }
+    }
+
+    func setAirPodsCalibration(_ c: AirPodsCalibration.Saved, for address: String) {
+        d.set(try? JSONEncoder().encode(c), forKey: "airpods." + address)
+    }
+
     var gyroBias: SIMD3<Double>? {
         get { (d.array(forKey: "gyroBias") as? [Double]).flatMap { $0.count == 3 ? SIMD3($0[0], $0[1], $0[2]) : nil } }
         set { d.set(newValue.map { [$0.x, $0.y, $0.z] }, forKey: "gyroBias") }
@@ -52,6 +65,7 @@ final class Settings {
         p.autoRecenter = autoRecenter
         p.steady = steady
         p.tracking = tracking
+        p.developer = developer
         p.sharpness = sharpness
     }
 }
@@ -104,6 +118,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var retryTimer: Timer?
     var openedSettings = false
     var resolutionWork: DispatchWorkItem?
+    var developerPanel: NSPanel?
+    var developerLabel: NSTextField?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         imu.onConnect = { [weak self] in
@@ -125,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             (kVK_ANSI_0, { [weak self] in self?.zoomReset() }),
             (kVK_ANSI_L, { [weak self] in self?.fov(1) }),
             (kVK_ANSI_K, { [weak self] in self?.fov(-1) }),
+            (kVK_ANSI_D, { [weak self] in self?.toggleDeveloper() }),
             (kVK_ANSI_Q, { NSApp.terminate(nil) }),
         ])
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
@@ -140,11 +157,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Persist the gyro bias so the next launch starts calibrated.
         Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.saveBias() }
+        // Display reconfigurations can move our windows without telling us; check every second.
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self, let glasses = Displays.glasses() else { return }
+            self.renderer?.keepOn(glasses)
+            if self.settings.developer { self.renderer?.setDeveloperDisplayInfo(self.developerDisplayInfo()) }
+            if self.settings.developer, self.settings.developerOnMac, let panel = self.developerPanel, !NSScreen.screens.contains(where: {
+                $0.frame.intersects(panel.frame) && Displays.id(of: $0) != Displays.id(of: glasses)
+            }) { self.placeDeveloperPanel() }
+        }
 
         if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
         fence.start()
         if settings.sourceKind == "virtual" { createMonitor() }
         screensChanged()
+        if settings.developer && settings.developerOnMac { showDeveloperPanel(true) }
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -155,6 +182,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func saveBias() {
         if imu.snapshot().state == .ready { settings.gyroBias = imu.bias }
+        if let c = renderer?.airPodsCalibration, let address = HeadphoneCatalog.currentOutputAddress() {
+            settings.setAirPodsCalibration(c, for: address)
+        }
+    }
+
+    /// Reuse the last calibration of whichever AirPods are the sound output now.
+    func seedAirPodsCalibration() {
+        guard let address = HeadphoneCatalog.currentOutputAddress(), let c = settings.airPodsCalibration(for: address) else { return }
+        renderer?.seedAirPods(c)
     }
 
     // MARK: Displays
@@ -201,16 +237,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let glasses = Displays.glasses()
         let gid = glasses.map(Displays.id)
         fence.blocked = gid
-        if let r = renderer, r.displayID != gid || r.window.frame != glasses?.frame {
+        if let r = renderer, r.displayID != gid || r.window.frame.size != glasses?.frame.size {
             r.shutdown()
             renderer = nil
         }
+        if let r = renderer, let glasses { r.keepOn(glasses) }
         if renderer == nil, let glasses, let gid {
             do {
                 let r = try Renderer(screen: glasses, displayID: gid, imu: imu, capture: capture, headphones: headphones)
                 r.update { settings.apply(to: &$0) }
-                r.show("RayNeoPin — ⌃⌥R recenter · ⌃⌥I / ⌃⌥O zoom · ⌃⌥Q quit", seconds: 5)
+                r.onDeveloperText = { [weak self] text in self?.developerLabel?.stringValue = text }
                 renderer = r
+                seedAirPodsCalibration()
+                r.show("RayNeoPin — ⌃⌥R recenter · ⌃⌥I / ⌃⌥O zoom · ⌃⌥Q quit", seconds: 5)
             } catch {
                 NSLog("RayNeoPin: renderer failed: %@", error.localizedDescription)
             }
@@ -288,6 +327,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggle("Steady Image (ignore heartbeat & micro-movements)", #selector(toggleSteady)) { [weak self] in self?.settings.steady == true })
         menu.addItem(submenu("Head Tracking Source", trackingMenu))
         menu.addItem(submenu("AirPods", airPodsMenu))
+        menu.addItem(item("Recalibrate AirPods", #selector(recalibrateAirPods)))
         menu.addItem(toggle("Auto Drift Correction (follows your gaze)", #selector(toggleAutoRecenter)) { [weak self] in self?.settings.autoRecenter == true })
         menu.addItem(.separator())
         menu.addItem(header("Display"))
@@ -301,6 +341,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("FOV +1°  ⌃⌥L", #selector(fovUp)))
         menu.addItem(item("FOV −1°  ⌃⌥K", #selector(fovDown)))
         menu.addItem(.separator())
+        menu.addItem(toggle("Developer Mode (data in the glasses)  ⌃⌥D", #selector(toggleDeveloper)) { [weak self] in self?.settings.developer == true })
+        menu.addItem(toggle("Also Show Developer Data on the Mac", #selector(toggleDeveloperOnMac)) { [weak self] in self?.settings.developerOnMac == true })
         menu.addItem(item("☕ Buy Me a Coffee — help pay Claude's bill", #selector(coffee)))
         menu.addItem(item("Check for Updates…", #selector(update)))
         menu.addItem(item("Quit  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
@@ -506,6 +548,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.recenter()
     }
 
+    @objc func recalibrateAirPods() {
+        renderer?.recalibrateAirPods()
+        renderer?.show("Recalibrating AirPods — turn your head left/right and nod a few times", seconds: 4)
+    }
+
     @objc func pickHeadphones(_ sender: NSMenuItem) {
         guard let address = sender.representedObject as? String,
               let device = pairedHeadphones.first(where: { $0.address == address }) else { return }
@@ -519,11 +566,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.settings.tracking = .both
                     self.renderer?.update { self.settings.apply(to: &$0) }
                 }
-                // CoreMotion picks the new route up on restart.
+                // CoreMotion picks the new route up on restart; other AirPods sit differently in the ears.
+                if ok {
+                    self.renderer?.recalibrateAirPods()
+                    self.seedAirPodsCalibration()
+                }
                 self.headphones.stop()
                 if self.settings.tracking != .glasses { self.headphones.start() }
             }
         }
+    }
+
+    @objc func toggleDeveloper() {
+        setting({ settings.developer.toggle() }, settings.developer ? "Developer mode off" : "Developer mode on")
+        showDeveloperPanel(settings.developer && settings.developerOnMac)
+    }
+
+    @objc func toggleDeveloperOnMac() {
+        settings.developerOnMac.toggle()
+        showDeveloperPanel(settings.developer && settings.developerOnMac)
+    }
+
+    /// Same text as the overlay in the glasses, in a floating panel on the Mac (screenshots can't
+    /// see the glasses window).
+    func showDeveloperPanel(_ show: Bool) {
+        guard show else { developerPanel?.orderOut(nil); return }
+        if developerPanel == nil {
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600),
+                                styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
+            panel.title = "RayNeoPin Developer"
+            panel.level = .floating
+            panel.isReleasedWhenClosed = false
+            panel.hidesOnDeactivate = false
+            let label = NSTextField(labelWithString: "Waiting for data…")
+            label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            label.textColor = .labelColor
+            label.isSelectable = true
+            label.frame = panel.contentView!.bounds.insetBy(dx: 12, dy: 10)
+            label.autoresizingMask = [.width, .height]
+            panel.contentView!.addSubview(label)
+            developerPanel = panel
+            developerLabel = label
+            placeDeveloperPanel()
+        }
+        developerPanel?.orderFrontRegardless()
+    }
+
+    func developerDisplayInfo() -> String {
+        func mode(_ id: CGDirectDisplayID) -> String {
+            guard let m = CGDisplayCopyDisplayMode(id) else { return "?" }
+            return "\(m.width)×\(m.height)\(m.pixelWidth != m.width ? " HiDPI" : "") @\(Int(m.refreshRate)) Hz"
+        }
+        let glasses = Displays.glasses().map { "glasses " + mode(Displays.id(of: $0)) } ?? "glasses not found"
+        let src: String
+        switch capture.source {
+        case .display(let id)?: src = "\(Displays.name(of: id)) " + mode(id)
+        case .window(let id)?: src = "window \(id)"
+        case nil: src = "none"
+        }
+        return "\(glasses)   source \(src)   resolution mode \(settings.resolution)"
+    }
+
+    /// Top-right of the Mac's own screen (never the glasses or the virtual monitor).
+    func placeDeveloperPanel() {
+        guard let panel = developerPanel, let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main else { return }
+        let f = screen.visibleFrame
+        panel.setFrame(NSRect(x: f.maxX - 1020, y: f.maxY - 620, width: 1000, height: 600), display: true)
     }
 
     @objc func toggleAutoRecenter() {

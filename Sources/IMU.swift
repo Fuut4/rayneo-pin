@@ -6,6 +6,7 @@
 
 import Foundation
 import IOKit.hid
+import QuartzCore
 import simd
 
 enum GlassesCommand: UInt8 {
@@ -46,7 +47,9 @@ struct Fusion {
     private var block = GyroStats()
     private var blocksOK = 0
     private var tableSum = SIMD3<Double>.zero
-    private var stillTime = 0.0
+    private(set) var stillTime = 0.0
+    private var lpGyro = SIMD3<Double>.zero
+    private var lpAcc = SIMD3<Double>.zero
     private let kp = 0.5
 
     /// `bias` is a previously saved gyro bias; without one the filter calibrates first.
@@ -87,11 +90,23 @@ struct Fusion {
         let w = gyro - bias
         omega = w
 
-        // Gyro offset tracking as in x-io Fusion (also used by XRLinuxDriver): after 5 s with
-        // every axis under 3 °/s, low-pass the bias toward the raw gyro (0.02 Hz cutoff).
-        let threshold = 3 * Fusion.deg
-        stillTime = abs(w.x) < threshold && abs(w.y) < threshold && abs(w.z) < threshold ? stillTime + dt : 0
-        if stillTime > 5 { bias += (gyro - bias) * (2 * .pi * 0.02 * dt) }
+        // Rest detection and bias estimation after VQF (Laidig & Seel, dlaidig/vqf): at rest the
+        // gyro stays within 2 °/s of its own 0.5 s low-pass, that low-pass stays under 2 °/s, and the
+        // accelerometer within 0.5 m/s² of its low-pass, for at least 1.5 s. Then the low-passed
+        // gyro *is* the bias. Comparing against the low-pass rather than zero works even while the
+        // current bias estimate is off.
+        let k = min(dt / 0.5, 1)
+        lpGyro += (gyro - lpGyro) * k
+        lpAcc += (acc - lpAcc) * k
+        // Unlike VQF (2 °/s), only small corrections to the current bias count as rest: on a head, a
+        // slow 1–2 °/s turn is indistinguishable from bias and must not be absorbed. Large errors are
+        // the startup/table calibration's job.
+        let correction = lpGyro - bias
+        let resting = simd_length(gyro - lpGyro) < 2 * Fusion.deg
+            && max(abs(correction.x), abs(correction.y), abs(correction.z)) < 0.6 * Fusion.deg
+            && simd_length(acc - lpAcc) < 0.5
+        stillTime = resting ? stillTime + dt : 0
+        if stillTime > 1.5 { bias += (lpGyro - bias) * min(dt / 3, 1) }
 
         // Pull pitch/roll toward gravity; yaw is gyro-only.
         var wc = w
@@ -132,7 +147,57 @@ struct Fusion {
     }
 }
 
+/// Orientation at a host time (CACurrentMediaTime), kept so other sensors can be compared with
+/// what the glasses measured at the same instant.
+struct PoseSample {
+    var time: Double
+    var q: simd_quatd
+    var omega: SIMD3<Double>
+}
+
+/// Fixed-size ring of the last few seconds of poses.
+struct PoseHistory {
+    private var items: [PoseSample]
+    private var next = 0
+    private(set) var count = 0
+
+    init(capacity: Int) { items = Array(repeating: PoseSample(time: 0, q: .identity, omega: .zero), count: capacity) }
+
+    mutating func append(_ p: PoseSample) {
+        items[next] = p
+        next = (next + 1) % items.count
+        count = min(count + 1, items.count)
+    }
+
+    mutating func removeAll() { count = 0 }
+
+    private func item(_ i: Int) -> PoseSample { items[(next - count + i + items.count) % items.count] }
+
+    /// Interpolated pose at `t`, nil if `t` is outside the stored window.
+    func pose(at t: Double) -> PoseSample? {
+        guard count > 1, t >= item(0).time, t <= item(count - 1).time else { return nil }
+        var lo = 0, hi = count - 1
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2
+            if item(mid).time <= t { lo = mid } else { hi = mid }
+        }
+        let a = item(lo), b = item(hi)
+        let f = b.time > a.time ? (t - a.time) / (b.time - a.time) : 0
+        return PoseSample(time: t, q: simd_slerp(a.q, b.q, f), omega: a.omega + (b.omega - a.omega) * f)
+    }
+}
+
 final class IMU {
+    /// Raw sensor values for the developer overlay.
+    struct Raw {
+        var acc = SIMD3<Double>.zero // m/s²
+        var gyro = SIMD3<Double>.zero // rad/s, before bias removal
+        var temperature = 0.0 // °C
+        var rate = 0.0 // unique samples per second
+        var bias = SIMD3<Double>.zero
+        var stillTime = 0.0
+    }
+
     struct Snapshot {
         var q: simd_quatd
         var omega: SIMD3<Double>
@@ -151,6 +216,10 @@ final class IMU {
     private var connected = false
     private var lastSample = Date.distantPast
     private(set) var samples = 0
+    private var raw = Raw()
+    private var history = PoseHistory(capacity: 2600) // ~5 s at 500 Hz
+    private var rateCount = 0
+    private var rateStart = Date()
 
     init(savedBias: SIMD3<Double>?) {
         fusion = Fusion(bias: savedBias)
@@ -194,6 +263,20 @@ final class IMU {
         return Snapshot(q: fusion.q, omega: fusion.omega, state: fusion.state, connected: connected)
     }
 
+    /// What the glasses measured at host time `t` (within the last ~5 s).
+    func pose(at t: Double) -> PoseSample? {
+        lock.lock(); defer { lock.unlock() }
+        return history.pose(at: t)
+    }
+
+    func rawSnapshot() -> Raw {
+        lock.lock(); defer { lock.unlock() }
+        var r = raw
+        r.bias = fusion.bias
+        r.stillTime = fusion.stillTime
+        return r
+    }
+
     var bias: SIMD3<Double> {
         lock.lock(); defer { lock.unlock() }
         return fusion.bias
@@ -224,6 +307,7 @@ final class IMU {
         lock.lock()
         connected = false
         fusion = Fusion(bias: fusion.state == .ready ? fusion.bias : nil)
+        history.removeAll()
         lock.unlock()
     }
 
@@ -236,9 +320,23 @@ final class IMU {
             let acc = SIMD3(f(4), f(8), f(12))
             let gyro = SIMD3(f(16), f(20), f(24)) * (.pi / 180) // deg/s -> rad/s
             let tick = raw.loadUnaligned(fromByteOffset: 40, as: UInt32.self)
-            lastSample = Date()
+            let now = Date()
+            lastSample = now
             samples += 1
-            lock.lock(); fusion.update(acc: acc, gyro: gyro, tick: tick); lock.unlock()
+            rateCount += 1
+            let hostTime = CACurrentMediaTime()
+            lock.lock()
+            fusion.update(acc: acc, gyro: gyro, tick: tick)
+            if fusion.state == .ready { history.append(PoseSample(time: hostTime, q: fusion.q, omega: fusion.omega)) }
+            self.raw.acc = acc
+            self.raw.gyro = gyro
+            self.raw.temperature = f(28)
+            if now.timeIntervalSince(rateStart) >= 1 {
+                self.raw.rate = Double(rateCount) / now.timeIntervalSince(rateStart)
+                rateCount = 0
+                rateStart = now
+            }
+            lock.unlock()
         case 0x42: // wake notify
             send(.imuOn)
             onConnect?()
