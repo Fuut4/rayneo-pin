@@ -341,7 +341,7 @@ struct SettingsView: View {
                     }
                     .labelsHidden().fixedSize()
                 }
-                Row(title: "AirPods", detail: "Learns how your AirPods sit in your ears. Turn and nod for a few seconds.") {
+                Row(title: "AirPods", detail: "Learns how your AirPods sit in your ears: turn left and right once, then look up and down once.") {
                     Button("Recalibrate", action: m.run { m.app.recalibrateAirPods() })
                 }
                 Row(title: "Gyro", detail: "Put the glasses on a table for 3 s. Fixes most drift.") {
@@ -361,8 +361,8 @@ struct SettingsView: View {
                             }
                             ProgressView(value: st.progress) { Text("Overall") }
                             HStack(spacing: 16) {
-                                ProgressView(value: st.turned) { Text("Turn left and right").font(.caption) }
-                                ProgressView(value: st.nodded) { Text("Nod up and down").font(.caption) }
+                                ProgressView(value: st.turned) { Text("Step 1: turn left, then right").font(.caption) }
+                                ProgressView(value: st.nodded) { Text("Step 2: look up, then down").font(.caption) }
                             }
                             Text(String(format: "Bluetooth delay %.0f ms · fit error %.0f%% · glitches skipped %d", st.lag * 1000, st.fitError * 100, st.glitches))
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
