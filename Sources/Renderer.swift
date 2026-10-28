@@ -264,7 +264,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     private var devTexelsPerPixel = 1.0
     private var devShown = false
 
-    private static let shader = """
+    static let shader = """
     #include <metal_stdlib>
     using namespace metal;
     struct VOut { float4 position [[position]]; float2 uv; };
@@ -368,7 +368,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     }
     """
 
-    private struct ScreenUniform {
+    struct ScreenUniform {
         var size: SIMD2<Float>
         var distance: Float
         var radius: Float
@@ -377,7 +377,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var columns: UInt32
     }
 
-    private struct Look {
+    struct Look {
         var sharpness: Float
         var texelsPerPixel: Float
         var sharpen: UInt32
