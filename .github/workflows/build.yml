@@ -12,8 +12,12 @@ jobs:
       - name: Compile
         run: |
           swiftc --version
+          set -o pipefail
           swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
-            Sources/*.swift -o RayNeoPin
+            Sources/*.swift -o RayNeoPin 2>&1 | tee build.txt || {
+            grep -E "error:" build.txt | head -20 | while read -r l; do echo "::error title=compile::$l"; done
+            exit 1
+          }
       - name: Compile the Metal shader (the app compiles it at runtime)
         run: |
           python3 - <<'PY'
