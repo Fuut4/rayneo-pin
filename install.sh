@@ -26,6 +26,8 @@ main() {
     exit 1
   fi
 
+  # "==> step/total" lines are progress, shown by the app while it updates.
+  echo "==> 1/4 Downloading the latest version…"
   if [[ -d "$SRC/.git" ]]; then
     BRANCH=${RAYNEOPIN_BRANCH:-$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}
     git -C "$SRC" fetch --quiet origin
@@ -44,7 +46,7 @@ main() {
     exit 0
   fi
 
-  echo "Building RayNeoPin $NEW…"
+  echo "==> 2/4 Building $NEW ($OLD → $NEW), about a minute…"
   "$SRC/build.sh"
 
   # From the app's "Check for Updates…", the app restarts itself once the new copy is in place.
@@ -54,6 +56,7 @@ main() {
     for _ in {1..20}; do pgrep -x RayNeoPin >/dev/null || break; sleep 0.25; done
     pkill -9 -x RayNeoPin 2>/dev/null || true
   fi
+  echo "==> 3/4 Installing…"
   mkdir -p "${DEST:h}"
   rm -rf "$DEST"
   cp -R "$SRC/RayNeoPin.app" "$DEST"

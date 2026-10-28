@@ -1254,8 +1254,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             renderer?.show("Install with install.sh to update from the menu", seconds: 5)
             return
         }
-        renderer?.show("Checking for updates…", seconds: 120)
-        showCalibrationStatus("Checking for updates…", title: "RayNeoPin Update")
+        guard updateProcess == nil else { updatePanel?.orderFrontRegardless(); return }
+        renderer?.show("Checking for updates…", seconds: 3)
+        updateProgress(step: 0, of: 4, "Checking for updates…")
         let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayNeoPin-update.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let p = Process()
@@ -1264,24 +1265,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         p.environment = ProcessInfo.processInfo.environment.merging(["RAYNEOPIN_FROM_APP": "1"]) { $1 }
         p.standardOutput = try? FileHandle(forWritingTo: logURL)
         p.standardError = p.standardOutput
+        // Follow the script's "==> step/total" lines while it runs.
+        let started = Date()
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self, let log = try? String(contentsOf: logURL, encoding: .utf8),
+                  let line = log.split(separator: "\n").last(where: { $0.hasPrefix("==> ") }) else { return }
+            let parts = line.dropFirst(4).split(separator: " ", maxSplits: 1)
+            let fraction = parts.first?.split(separator: "/").compactMap { Int($0) } ?? []
+            guard fraction.count == 2, parts.count == 2 else { return }
+            let seconds = Int(Date().timeIntervalSince(started))
+            self.updateProgress(step: fraction[0], of: fraction[1], String(parts[1]), detail: "\(seconds) s")
+            self.renderer?.show("Updating: " + String(parts[1]), seconds: 2)
+        }
         // The script builds and installs a new version, then this app restarts into it.
         p.terminationHandler = { [weak self] p in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.updateTimer?.invalidate()
+                self.updateTimer = nil
+                self.updateProcess = nil
                 // The script's last line says what it did, e.g. "up to date (61775b3, test/everything)".
                 let last = (try? String(contentsOf: logURL, encoding: .utf8))?
                     .split(separator: "\n").last.map(String.init) ?? ""
                 let message = p.terminationStatus != 0 ? "Update failed — see ~/Library/Logs/RayNeoPin-update.log"
                     : last.contains(" installed to ") ? "Updated — restarting…" : (last.isEmpty ? "You have the latest version" : last)
                 self.renderer?.show(message, seconds: 6)
-                self.showCalibrationStatus(message, title: "RayNeoPin Update")
-                if p.terminationStatus == 0, last.contains(" installed to ") {
+                let installed = p.terminationStatus == 0 && last.contains(" installed to ")
+                if installed {
+                    self.updateProgress(step: 4, of: 4, "Restarting into the new version…")
+                } else {
+                    self.updateProgress(step: 4, of: 4, message, finished: true, failed: p.terminationStatus != 0)
+                }
+                if installed {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.relaunch() }
                 } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { if self.calibrationTimer == nil { self.calibrationPanel?.orderOut(nil) } }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { self.updatePanel?.orderOut(nil) }
                 }
             }
         }
-        try? p.run()
+        updateProcess = p
+        do { try p.run() } catch {
+            updateTimer?.invalidate()
+            updateTimer = nil
+            updateProcess = nil
+            updateProgress(step: 0, of: 4, "Couldn't start the updater: \(error.localizedDescription)", failed: true)
+        }
+    }
+
+    var updateProcess: Process?
+    var updateTimer: Timer?
+    var updatePanel: NSPanel?
+    private var updateLabel: NSTextField?
+    private var updateDetail: NSTextField?
+    private var updateBar: NSProgressIndicator?
+
+    private var updateStep = -1
+    private var updateStepStart = Date()
+
+    /// A small window at the top of the Mac's screen showing each update step (download, build,
+    /// install, restart) with a progress bar, since you might not be wearing the glasses.
+    func updateProgress(step: Int, of total: Int, _ text: String, detail: String = "", finished: Bool = false, failed: Bool = false) {
+        if updatePanel == nil {
+            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 92),
+                                styleMask: [.titled, .closable, .hudWindow, .utilityWindow, .nonactivatingPanel],
+                                backing: .buffered, defer: false)
+            panel.title = "Updating RayNeoPin"
+            panel.level = .floating
+            panel.isReleasedWhenClosed = false
+            let label = NSTextField(labelWithString: "")
+            label.font = .systemFont(ofSize: 13, weight: .semibold)
+            label.lineBreakMode = .byTruncatingTail
+            label.frame = NSRect(x: 16, y: 54, width: 360, height: 20)
+            let detailLabel = NSTextField(labelWithString: "")
+            detailLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            detailLabel.textColor = .secondaryLabelColor
+            detailLabel.alignment = .right
+            detailLabel.frame = NSRect(x: 376, y: 55, width: 48, height: 18)
+            let bar = NSProgressIndicator(frame: NSRect(x: 16, y: 22, width: 408, height: 16))
+            bar.style = .bar
+            bar.isIndeterminate = false
+            bar.minValue = 0
+            for v in [label, detailLabel, bar] { panel.contentView!.addSubview(v) }
+            updatePanel = panel
+            updateLabel = label
+            updateDetail = detailLabel
+            updateBar = bar
+        }
+        guard let panel = updatePanel else { return }
+        if step != updateStep { updateStep = step; updateStepStart = Date() }
+        updateLabel?.stringValue = failed ? "⚠️ " + text : finished || step == 0 ? text : "\(step)/\(total)  \(text)"
+        updateDetail?.stringValue = detail
+        updateBar?.maxValue = Double(total)
+        // Each step fills its share over its usual duration, so the bar keeps moving during the build.
+        let expected = [0: 4.0, 1: 5, 2: 60, 3: 3, 4: 2][step] ?? 5
+        let within = min(Date().timeIntervalSince(updateStepStart) / expected, 0.95)
+        updateBar?.doubleValue = finished ? Double(total) : failed ? 0 : Double(max(step - 1, 0)) + (step == 0 ? 0.1 : within)
+        if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main, !panel.isVisible {
+            let f = screen.visibleFrame
+            panel.setFrameTopLeftPoint(NSPoint(x: f.midX - 220, y: f.maxY - 10))
+        }
+        panel.orderFrontRegardless()
     }
 }
