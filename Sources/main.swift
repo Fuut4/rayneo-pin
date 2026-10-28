@@ -17,6 +17,8 @@ if CommandLine.arguments.contains("--check-permission") {
         print("\(d.address.uppercased() == current ? "*" : " ") \(d.name) — \(d.model) — \(tracking) — \(d.connected ? "connected" : "not connected")")
     }
     print("* = current sound output (what head tracking follows)")
+} else if let i = CommandLine.arguments.firstIndex(of: "--settings-snapshot"), CommandLine.arguments.count > i + 1 {
+    SettingsSnapshot.run(URL(fileURLWithPath: CommandLine.arguments[i + 1]))
 } else if let i = CommandLine.arguments.firstIndex(of: "--render-lab") {
     _ = NSApplication.shared
     let dir = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : NSTemporaryDirectory() + "rayneopin-lab"

@@ -1,6 +1,7 @@
 // The Settings window: every option, grouped in tabs, so the menu bar menu only keeps everyday
 // actions. Each control goes through the same AppDelegate code as the menus and hotkeys.
 
+import AppKit
 import ServiceManagement
 import SwiftUI
 
@@ -131,7 +132,12 @@ enum SettingsPage: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @ObservedObject var model: SettingsModel
-    @State private var page: SettingsPage? = .general
+    @State private var page: SettingsPage?
+
+    init(model: SettingsModel, page: SettingsPage = .general) {
+        self.model = model
+        _page = State(initialValue: page)
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -449,4 +455,30 @@ struct SettingsView: View {
     static let revision: String = Bundle.main.url(forResource: "revision", withExtension: nil)
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?
         .trimmingCharacters(in: .whitespacesAndNewlines) ?? "dev"
+}
+
+/// `RayNeoPin --settings-snapshot <folder>`: renders every Settings page to a PNG (used by CI, so the
+/// layout can be checked without a Mac at hand).
+enum SettingsSnapshot {
+    static func run(_ folder: URL) {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.appearance = NSAppearance(named: .darkAqua)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let delegate = AppDelegate()
+        for page in SettingsPage.allCases {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
+                             styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+            w.titlebarAppearsTransparent = true
+            w.contentViewController = NSHostingController(rootView: SettingsView(model: SettingsModel(delegate), page: page))
+            w.setContentSize(NSSize(width: 820, height: 640))
+            w.orderFront(nil)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 1))
+            guard let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("settings-\(page.rawValue).png"))
+            w.orderOut(nil)
+        }
+        exit(0)
+    }
 }
