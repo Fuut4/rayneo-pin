@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Install or update RayNeoPin. Run it again (or use "Buscar actualización…" in the menu) to update:
+# Install or update RayNeoPin. Run it again (or use "Check for Updates…" in the menu) to update:
 #
 #   curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | zsh
 #
@@ -15,7 +15,7 @@ FORCE=0
 [[ "${1:-}" == "--force" ]] && FORCE=1
 
 if ! xcode-select -p >/dev/null 2>&1; then
-  echo "Hacen falta las Command Line Tools de Xcode. Instalalas con: xcode-select --install"
+  echo "Xcode Command Line Tools are required. Install them with: xcode-select --install"
   exit 1
 fi
 
@@ -30,11 +30,11 @@ fi
 NEW=$(git -C "$SRC" rev-parse --short HEAD)
 OLD=$(cat "$DEST/Contents/Resources/revision" 2>/dev/null || echo none)
 if [[ $FORCE == 0 && "$NEW" == "$OLD" ]]; then
-  echo "RayNeoPin ya está actualizado ($NEW)."
+  echo "RayNeoPin is up to date ($NEW)."
   exit 0
 fi
 
-echo "Compilando RayNeoPin $NEW…"
+echo "Building RayNeoPin $NEW…"
 "$SRC/build.sh"
 
 pkill -x RayNeoPin 2>/dev/null && sleep 1 || true
@@ -42,4 +42,4 @@ mkdir -p "${DEST:h}"
 rm -rf "$DEST"
 cp -R "$SRC/RayNeoPin.app" "$DEST"
 open "$DEST"
-echo "RayNeoPin $NEW instalado en $DEST ($OLD → $NEW)."
+echo "RayNeoPin $NEW installed to $DEST ($OLD → $NEW)."

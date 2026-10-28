@@ -229,13 +229,13 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             switch source {
             case .display(let id):
                 guard let display = content.displays.first(where: { $0.displayID == id }) ?? content.displays.first
-                else { onError?("No hay pantallas para capturar"); return }
+                else { onError?("No displays to capture"); return }
                 filter = SCContentFilter(display: display, excludingWindows: [])
                 let mode = CGDisplayCopyDisplayMode(display.displayID)
                 pixelSize = CGSize(width: mode?.pixelWidth ?? display.width, height: mode?.pixelHeight ?? display.height)
             case .window(let id):
                 guard let window = content.windows.first(where: { $0.windowID == id })
-                else { onError?("La ventana ya no existe"); return }
+                else { onError?("That window no longer exists"); return }
                 filter = SCContentFilter(desktopIndependentWindow: window)
                 pixelSize = CGSize(width: window.frame.width * 2, height: window.frame.height * 2)
             }
@@ -257,7 +257,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
             self.stream = stream
             DispatchQueue.main.async { self.onStarted?() }
         } catch {
-            onError?("Captura: \(error.localizedDescription)")
+            onError?("Capture: \(error.localizedDescription)")
         }
     }
 
@@ -279,7 +279,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        DispatchQueue.main.async { self.onError?("Captura detenida: \(error.localizedDescription)") }
+        DispatchQueue.main.async { self.onError?("Capture stopped: \(error.localizedDescription)") }
     }
 }
 
@@ -389,8 +389,8 @@ final class Renderer: NSObject {
         defer { CATransaction.commit() }
 
         if Date() > hudUntil {
-            hud.string = notice ?? (!s.connected ? "Gafas no detectadas (USB)"
-                : !s.calibrated ? "Calibrando… no muevas la cabeza (\(Int(s.progress * 100))%)" : "")
+            hud.string = notice ?? (!s.connected ? "Glasses not detected (USB)"
+                : !s.calibrated ? "Calibrating… keep your head still (\(Int(s.progress * 100))%)" : "")
         }
         guard s.connected, s.calibrated, !paused else {
             screenLayer.transform = CATransform3DIdentity
@@ -504,17 +504,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Without Screen Recording permission the glasses would stay black; say so on them and keep retrying.
     func permissionMissing() {
-        renderer?.notice = "Falta permiso: Ajustes › Privacidad y seguridad › Grabación de pantalla › activá RayNeoPin"
+        renderer?.notice = "Screen Recording permission needed: System Settings › Privacy & Security › Screen & System Audio Recording › turn on RayNeoPin"
         if !openedSettings {
             openedSettings = true
             NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
         }
+        // A running process never sees the grant, so ask a fresh copy of ourselves and relaunch when it says yes.
         if retryTimer == nil {
-            retryTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                Task { await self.capture.start(self.source) }
+            retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                guard let self, AppDelegate.permissionGrantedInFreshProcess() else { return }
+                self.retryTimer?.invalidate()
+                self.relaunch()
             }
         }
+    }
+
+    static func permissionGrantedInFreshProcess() -> Bool {
+        let p = Process()
+        p.executableURL = Bundle.main.executableURL
+        p.arguments = ["--check-permission"]
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    func relaunch() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; /usr/bin/open \"$0\"", Bundle.main.bundlePath]
+        try? p.run()
+        NSApp.terminate(nil)
     }
 
     /// Pulls the latest source, rebuilds, reinstalls and relaunches (see install.sh).
@@ -522,10 +541,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let script = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/RayNeoPin/src/install.sh").path
         guard FileManager.default.fileExists(atPath: script) else {
-            renderer?.show("Instalá con install.sh para poder actualizar desde el menú", seconds: 5)
+            renderer?.show("Install with install.sh to update from the menu", seconds: 5)
             return
         }
-        renderer?.show("Buscando actualización…", seconds: 60)
+        renderer?.show("Checking for updates…", seconds: 60)
         let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayNeoPin-update.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let p = Process()
@@ -536,8 +555,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // If there is a new version the script quits and relaunches this app; otherwise it just exits.
         p.terminationHandler = { [weak self] p in
             DispatchQueue.main.async {
-                self?.renderer?.show(p.terminationStatus == 0 ? "Ya tenés la última versión"
-                                     : "Error al actualizar (ver ~/Library/Logs/RayNeoPin-update.log)", seconds: 5)
+                self?.renderer?.show(p.terminationStatus == 0 ? "You have the latest version"
+                                     : "Update failed (see ~/Library/Logs/RayNeoPin-update.log)", seconds: 5)
             }
         }
         try? p.run()
@@ -560,7 +579,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if renderer?.window.screen != screen {
             renderer?.window.orderOut(nil)
             renderer = Renderer(screen: screen, imu: imu, settings: settings)
-            renderer?.show("RayNeoPin — ⌃⌥R recentrar · ⌃⌥ +/- zoom · ⌃⌥Q salir", seconds: 6)
+            renderer?.show("RayNeoPin — ⌃⌥R recenter · ⌃⌥ +/- zoom · ⌃⌥Q quit", seconds: 6)
         }
         // Never mirror the glasses into themselves: default to the built-in display.
         if case .display(let id) = source, id == glassesID || renderer != nil && id == CGMainDisplayID() {
@@ -578,24 +597,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.image = NSImage(systemSymbolName: "eyeglasses", accessibilityDescription: "RayNeoPin")
         let menu = NSMenu()
         menu.delegate = self
-        menu.addItem(item("Recentrar  ⌃⌥R", #selector(recenter)))
-        menu.addItem(item("Recalibrar giroscopio", #selector(recalibrate)))
-        pauseItem = item("Pausar tracking  ⌃⌥T", #selector(togglePause))
+        menu.addItem(item("Recenter  ⌃⌥R", #selector(recenter)))
+        menu.addItem(item("Recalibrate gyro", #selector(recalibrate)))
+        pauseItem = item("Pause tracking  ⌃⌥T", #selector(togglePause))
         menu.addItem(pauseItem)
-        yawItem = item("Solo horizontal (sin pitch/roll)  ⌃⌥Y", #selector(toggleYawOnly))
+        yawItem = item("Yaw only (no pitch/roll)  ⌃⌥Y", #selector(toggleYawOnly))
         menu.addItem(yawItem)
         menu.addItem(.separator())
-        menu.addItem(item("Agrandar  ⌃⌥=", #selector(zoomIn)))
-        menu.addItem(item("Achicar  ⌃⌥-", #selector(zoomOut)))
+        menu.addItem(item("Zoom in  ⌃⌥=", #selector(zoomIn)))
+        menu.addItem(item("Zoom out  ⌃⌥-", #selector(zoomOut)))
         menu.addItem(item("FOV +1°  ⌃⌥]", #selector(fovUp)))
         menu.addItem(item("FOV −1°  ⌃⌥[", #selector(fovDown)))
         menu.addItem(.separator())
-        let src = NSMenuItem(title: "Fuente", action: nil, keyEquivalent: "")
+        let src = NSMenuItem(title: "Source", action: nil, keyEquivalent: "")
         src.submenu = sourceMenu
         menu.addItem(src)
         menu.addItem(.separator())
-        menu.addItem(item("Buscar actualización…", #selector(update)))
-        menu.addItem(item("Salir  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
+        menu.addItem(item("Check for Updates…", #selector(update)))
+        menu.addItem(item("Quit  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
         statusItem.menu = menu
     }
 
@@ -614,13 +633,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @MainActor func refreshSources() async {
         guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true) else {
             sourceMenu.removeAllItems()
-            sourceMenu.addItem(NSMenuItem(title: "Falta permiso de Grabación de pantalla", action: nil, keyEquivalent: ""))
+            sourceMenu.addItem(NSMenuItem(title: "Screen Recording permission needed", action: nil, keyEquivalent: ""))
             return
         }
         let glassesID = AppDelegate.glassesScreen()?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
         sourceMenu.removeAllItems()
         for d in content.displays where d.displayID != glassesID {
-            let name = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == d.displayID }?.localizedName ?? "Pantalla \(d.displayID)"
+            let name = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID) == d.displayID }?.localizedName ?? "Display \(d.displayID)"
             let i = NSMenuItem(title: "🖥  \(name)", action: #selector(pickSource(_:)), keyEquivalent: "")
             i.target = self
             i.representedObject = ["display", d.displayID]
@@ -650,17 +669,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.recenter()
     }
 
-    @objc func recenter() { renderer?.recenter(); renderer?.show("Recentrado", seconds: 1) }
+    @objc func recenter() { renderer?.recenter(); renderer?.show("Recentered", seconds: 1) }
     @objc func recalibrate() { imu.recalibrate() }
     @objc func togglePause() {
         guard let r = renderer else { return }
         r.paused.toggle()
-        r.show(r.paused ? "Tracking en pausa (pantalla fija a la cabeza)" : "Tracking activo", seconds: 2)
+        r.show(r.paused ? "Tracking paused (screen follows your head)" : "Tracking on", seconds: 2)
     }
     @objc func toggleYawOnly() {
         settings.yawOnly.toggle()
         renderer?.recenter()
-        renderer?.show(settings.yawOnly ? "Solo horizontal" : "3DoF completo", seconds: 2)
+        renderer?.show(settings.yawOnly ? "Yaw only" : "Full 3DoF", seconds: 2)
     }
     @objc func zoomIn() { zoom(1.1) }
     @objc func zoomOut() { zoom(1 / 1.1) }
@@ -682,22 +701,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // MARK: - Entry point
 
-if CommandLine.arguments.contains("--imu-test") {
+if CommandLine.arguments.contains("--check-permission") {
+    exit(CGPreflightScreenCaptureAccess() ? 0 : 1)
+} else if CommandLine.arguments.contains("--imu-test") {
     setvbuf(stdout, nil, _IOLBF, 0)
     let imu = IMU()
     imu.start()
-    print("Leyendo IMU — quedate quieto ~1 s para calibrar. Ctrl+C para salir.")
+    print("Reading IMU — keep still ~1 s to calibrate. Ctrl+C to quit.")
     var anchor: simd_quatd?
     Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
         let s = imu.snapshot()
-        guard s.connected else { print("sin gafas"); return }
-        guard s.calibrated else { print(String(format: "calibrando %3.0f%%", s.progress * 100)); return }
+        guard s.connected else { print("no glasses"); return }
+        guard s.calibrated else { print(String(format: "calibrating %3.0f%%", s.progress * 100)); return }
         if anchor == nil { let yp = s.q.yawPitch; anchor = .yawPitch(yp.yaw, yp.pitch) }
         let rel = anchor!.inverse * s.q
         let yp = rel.yawPitch
         let up = rel.inverse.act(SIMD3(0, 1, 0))
         let roll = atan2(up.x, up.y)
-        print(String(format: "yaw %+7.1f°  pitch %+6.1f°  roll %+6.1f°   (%d muestras)",
+        print(String(format: "yaw %+7.1f°  pitch %+6.1f°  roll %+6.1f°   (%d samples)",
                      degrees(yp.yaw), degrees(yp.pitch), degrees(roll), imu.samples))
     }
     RunLoop.main.run()
