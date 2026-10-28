@@ -14,11 +14,19 @@ final class Renderer: NSObject {
     struct Params {
         var zoom = 1.0
         var fovDiagonal = 46.0
-        var yawOnly = false
+        var lockYaw = false // a locked axis follows the head instead of staying fixed in space
+        var lockPitch = false
+        var lockRoll = false
         var prediction = 0.012
-        var autoRecenter = true
+        var autoRecenter = false
+        var steady = true
+        var sharpness = 0.5
+        var useAirPods = true
         var paused = false
     }
+
+    /// Fraction of the view width the screen covers at zoom 1.
+    static let baseWidth = 0.83
 
     let window: NSWindow
     let displayID: CGDirectDisplayID
@@ -26,6 +34,7 @@ final class Renderer: NSObject {
     private let hud = CATextLayer()
     private let imu: IMU
     private let capture: Capture
+    private let headphones: Headphones
 
     private let device: MTLDevice
     private let queue: MTLCommandQueue
@@ -42,12 +51,15 @@ final class Renderer: NSObject {
     private var notice: String?
     private var toast: (text: String, until: Date)?
     private var shownHUD = ""
+    private var airPodsActive = false
 
     // Render-thread state
     private var link: CADisplayLink?
     private var thread: Thread?
     private var anchor = simd_quatd.identity
     private var smoothed = simd_quatd.identity
+    private var steadyPose = simd_quatd.identity
+    private var heading = HeadingReference()
     private var hasPose = false
     private var zoom = 1.0
     private var gazeYawAvg = 0.0
@@ -64,12 +76,20 @@ final class Renderer: NSObject {
         o.uv = float2(c[vid].x + 0.5, 0.5 - c[vid].y);
         return o;
     }
-    fragment float4 fs(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler s [[sampler(0)]]) {
-        return tex.sample(s, in.uv);
+    // Unsharp mask in output-pixel units: restores edge contrast lost when the desktop is scaled down.
+    fragment float4 fs(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler s [[sampler(0)]],
+                       constant float &sharpness [[buffer(0)]]) {
+        float2 dx = dfdx(in.uv), dy = dfdy(in.uv);
+        gradient2d g(dx, dy);
+        float4 c = tex.sample(s, in.uv, g);
+        if (sharpness <= 0.0) return c;
+        float4 n = tex.sample(s, in.uv + dx, g) + tex.sample(s, in.uv - dx, g)
+                 + tex.sample(s, in.uv + dy, g) + tex.sample(s, in.uv - dy, g);
+        return clamp(c + sharpness * (c - 0.25 * n), 0.0, 1.0);
     }
     """
 
-    init(screen: NSScreen, displayID: CGDirectDisplayID, imu: IMU, capture: Capture) throws {
+    init(screen: NSScreen, displayID: CGDirectDisplayID, imu: IMU, capture: Capture, headphones: Headphones) throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue() else {
             throw NSError(domain: "RayNeoPin", code: 1, userInfo: [NSLocalizedDescriptionKey: "Metal unavailable"])
         }
@@ -77,6 +97,7 @@ final class Renderer: NSObject {
         self.queue = queue
         self.imu = imu
         self.capture = capture
+        self.headphones = headphones
         self.displayID = displayID
 
         let library = try device.makeLibrary(source: Renderer.shader, options: nil)
@@ -166,6 +187,12 @@ final class Renderer: NSObject {
         return params
     }
 
+    /// True once AirPods headings are actually correcting the glasses.
+    var isUsingAirPods: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return airPodsActive
+    }
+
     func recenter() {
         lock.lock(); recenterRequested = true; lock.unlock()
     }
@@ -197,33 +224,62 @@ final class Renderer: NSObject {
         let s = imu.snapshot()
         updateHUD(notice ?? toastText ?? status(s))
 
-        // Late-latched pose: sampled right before drawing, extrapolated over the display latency.
         var head = simd_quatd.identity
         if s.ready, !p.paused {
-            let predicted = s.q.extrapolated(s.omega, p.prediction)
+            let speed = simd_length(s.omega)
+
+            // Second heading reference from AirPods, applied as a rotation about world up.
+            let airpods = p.useAirPods ? headphones.latestYaw() : nil
+            heading.update(glasses: s.q.yawPitch.yaw, airpods: airpods, dt: dt, speed: speed)
+            let usingAirPods = airpods != nil && heading.locked
+            if usingAirPods != airPodsActive { lock.lock(); airPodsActive = usingAirPods; lock.unlock() }
+            let corrected = usingAirPods ? simd_quatd(angle: heading.correction, axis: SIMD3(0, 1, 0)) * s.q : s.q
+
+            // Late-latched pose: sampled right before drawing, extrapolated over the display latency.
+            let predicted = corrected.extrapolated(s.omega, p.prediction)
             if recenterNow || !hasPose {
                 let yp = predicted.yawPitch
-                anchor = .yawPitch(yp.yaw, p.yawOnly ? 0 : yp.pitch)
+                anchor = .yawPitch(yp.yaw, p.lockPitch ? 0 : yp.pitch)
                 smoothed = predicted
+                steadyPose = predicted
                 gazeYawAvg = 0
+                if !hasPose { heading.reset() }
                 hasPose = true
             }
             // Heavy damping when still (no shimmering text), none while turning (no lag).
-            let speed = simd_length(s.omega)
             let t = min(max((speed - 0.02) / 0.3, 0), 1)
             let still = min(dt / 0.25, 1)
             smoothed = simd_slerp(smoothed, predicted, still + (1 - still) * t)
 
-            var rel = anchor.inverse * smoothed
-            if p.autoRecenter { absorbDrift(rel, dt) ; rel = anchor.inverse * smoothed }
-            if p.yawOnly { rel = .yawPitch(rel.yawPitch.yaw, 0) }
-            head = rel
+            // Steady image: ignore movements under 0.1° (heartbeat, breathing) without ever jumping,
+            // by only following once the pose leaves that radius.
+            if p.steady {
+                let d = (steadyPose.inverse * smoothed).angle
+                let radius = 0.1 * .pi / 180
+                let delta = min(d, 2 * .pi - d)
+                if delta > radius { steadyPose = simd_slerp(steadyPose, smoothed, (delta - radius) / delta) }
+            } else {
+                steadyPose = smoothed
+            }
+
+            if p.autoRecenter { absorbDrift(anchor.inverse * steadyPose, dt) }
+            head = applyLocks(anchor.inverse * steadyPose, p)
         } else if !s.ready {
             hasPose = false
         }
 
         zoom += (p.zoom - zoom) * min(dt / 0.08, 1)
         draw(head: head, params: p)
+    }
+
+    /// Locked axes follow the head: drop them from the head rotation (yaw, then pitch, then roll).
+    private func applyLocks(_ rel: simd_quatd, _ p: Params) -> simd_quatd {
+        guard p.lockYaw || p.lockPitch || p.lockRoll else { return rel }
+        let yp = rel.yawPitch
+        let r = simd_quatd.yawPitch(yp.yaw, yp.pitch).inverse * rel // what's left is roll about -z
+        let roll = 2 * atan2(r.imag.z, r.real)
+        return simd_quatd.yawPitch(p.lockYaw ? 0 : yp.yaw, p.lockPitch ? 0 : yp.pitch)
+            * simd_quatd(angle: p.lockRoll ? 0 : roll, axis: SIMD3(0, 0, 1))
     }
 
     /// Residual gyro drift slowly rotates the world. Most of the time you look at the screen, so
@@ -287,8 +343,10 @@ final class Renderer: NSObject {
         guard let enc = cb.makeRenderCommandEncoder(descriptor: pass) else { return }
         if let tex = mipTexture {
             var mvp = matrix(head: head, params: p, drawable: drawable.texture)
+            var sharpness = Float(p.sharpness)
             enc.setRenderPipelineState(pipeline)
             enc.setVertexBytes(&mvp, length: MemoryLayout<simd_float4x4>.stride, index: 0)
+            enc.setFragmentBytes(&sharpness, length: MemoryLayout<Float>.stride, index: 0)
             enc.setFragmentTexture(tex, index: 0)
             enc.setFragmentSamplerState(sampler, index: 0)
             enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -315,7 +373,7 @@ final class Renderer: NSObject {
         let halfH = halfDiag * h / sqrt(w * w + h * h)
 
         let distance = 1.0
-        let width = 2 * distance * halfW * 0.83 * zoom // zoom 1 ≈ 83% of the view width
+        let width = 2 * distance * halfW * Renderer.baseWidth * zoom
         let height = width / aspect
 
         let near = 0.05, far = 100.0

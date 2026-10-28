@@ -3,6 +3,7 @@
 //   RayNeoPin --check-permission  exit 0 if Screen Recording is granted (used for auto-relaunch)
 
 import AppKit
+import CoreMotion
 import simd
 
 if CommandLine.arguments.contains("--check-permission") {
@@ -11,7 +12,10 @@ if CommandLine.arguments.contains("--check-permission") {
     setvbuf(stdout, nil, _IOLBF, 0)
     let imu = IMU(savedBias: Settings().gyroBias)
     imu.start()
+    let headphones = Headphones()
+    headphones.start()
     print("Reading IMU — keep still ~1 s to calibrate. Ctrl+C to quit.")
+    print("AirPods motion available: \(headphones.isAvailable), authorization: \(CMHeadphoneMotionManager.authorizationStatus().rawValue) (0 undetermined, 1 restricted, 2 denied, 3 authorized)")
     var anchor: simd_quatd?
     Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
         let s = imu.snapshot()
@@ -22,8 +26,9 @@ if CommandLine.arguments.contains("--check-permission") {
         let yp = rel.yawPitch
         let up = rel.inverse.act(SIMD3(0, 1, 0))
         let b = imu.bias * 180 / .pi
-        print(String(format: "yaw %+7.1f°  pitch %+6.1f°  roll %+6.1f°   bias %+.3f %+.3f %+.3f °/s  (%d samples)",
-                     degrees(yp.yaw), degrees(yp.pitch), degrees(atan2(up.x, up.y)), b.x, b.y, b.z, imu.samples))
+        let airpods = headphones.latestYaw().map { String(format: "%+7.1f°", degrees($0)) } ?? "  —"
+        print(String(format: "yaw %+7.1f°  pitch %+6.1f°  roll %+6.1f°   bias %+.3f %+.3f %+.3f °/s  AirPods yaw %@  (%d samples)",
+                     degrees(yp.yaw), degrees(yp.pitch), degrees(atan2(up.x, up.y)), b.x, b.y, b.z, airpods, imu.samples))
     }
     RunLoop.main.run()
 } else {

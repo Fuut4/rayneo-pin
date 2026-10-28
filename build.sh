@@ -23,11 +23,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>RayNeoPin</string>
   <key>CFBundleExecutable</key><string>RayNeoPin</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.3</string>
+  <key>CFBundleShortVersionString</key><string>0.4</string>
   <key>CFBundleVersion</key><string>$REVISION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMotionUsageDescription</key><string>RayNeoPin uses your AirPods head tracking as a second reference to keep the pinned screen from drifting.</string>
 </dict>
 </plist>
 PLIST

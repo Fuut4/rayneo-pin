@@ -13,21 +13,43 @@ import simd
 
 final class Settings {
     private let d = UserDefaults.standard
-    var zoom: Double { get { d.object(forKey: "zoom") as? Double ?? 1.0 } set { d.set(newValue, forKey: "zoom") } }
+
+    private func bool(_ key: String, _ fallback: Bool) -> Bool { d.object(forKey: key) as? Bool ?? fallback }
+    private func double(_ key: String, _ fallback: Double) -> Double { d.object(forKey: key) as? Double ?? fallback }
+
+    var zoom: Double { get { double("zoom", 1) } set { d.set(newValue, forKey: "zoom") } }
     /// Diagonal field of view of the glasses. Wrong values make the screen "swim" when turning.
-    var fovDiagonal: Double { get { d.object(forKey: "fov") as? Double ?? 46.0 } set { d.set(newValue, forKey: "fov") } }
-    var yawOnly: Bool { get { d.bool(forKey: "yawOnly") } set { d.set(newValue, forKey: "yawOnly") } }
-    var autoRecenter: Bool { get { d.object(forKey: "autoRecenter") as? Bool ?? true } set { d.set(newValue, forKey: "autoRecenter") } }
-    var highRefresh: Bool { get { d.object(forKey: "highRefresh") as? Bool ?? true } set { d.set(newValue, forKey: "highRefresh") } }
+    var fovDiagonal: Double { get { double("fov", 46) } set { d.set(newValue, forKey: "fov") } }
+    // Old "yaw only" mode meant pitch and roll locked.
+    var lockYaw: Bool { get { bool("lockYaw", false) } set { d.set(newValue, forKey: "lockYaw") } }
+    var lockPitch: Bool { get { bool("lockPitch", d.bool(forKey: "yawOnly")) } set { d.set(newValue, forKey: "lockPitch") } }
+    var lockRoll: Bool { get { bool("lockRoll", d.bool(forKey: "yawOnly")) } set { d.set(newValue, forKey: "lockRoll") } }
+    var autoRecenter: Bool { get { bool("autoDriftCorrection", false) } set { d.set(newValue, forKey: "autoDriftCorrection") } }
+    var steady: Bool { get { bool("steady", true) } set { d.set(newValue, forKey: "steady") } }
+    var useAirPods: Bool { get { bool("useAirPods", true) } set { d.set(newValue, forKey: "useAirPods") } }
+    var sharpness: Double { get { double("sharpness", 0.5) } set { d.set(newValue, forKey: "sharpness") } }
+    var highRefresh: Bool { get { bool("highRefresh", true) } set { d.set(newValue, forKey: "highRefresh") } }
     var resolution: VirtualMonitor.Resolution {
-        get { VirtualMonitor.Resolution(rawValue: d.string(forKey: "resolution") ?? "") ?? .fhd }
-        set { d.set(newValue.rawValue, forKey: "resolution") }
+        get { VirtualMonitor.Resolution.allCases.first { "\($0)" == d.string(forKey: "resolutionMode") } ?? .crisp }
+        set { d.set("\(newValue)", forKey: "resolutionMode") }
     }
     /// "virtual", or "display"/"window" for mirroring something that already exists.
     var sourceKind: String { get { d.string(forKey: "sourceKind") ?? "virtual" } set { d.set(newValue, forKey: "sourceKind") } }
     var gyroBias: SIMD3<Double>? {
         get { (d.array(forKey: "gyroBias") as? [Double]).flatMap { $0.count == 3 ? SIMD3($0[0], $0[1], $0[2]) : nil } }
         set { d.set(newValue.map { [$0.x, $0.y, $0.z] }, forKey: "gyroBias") }
+    }
+
+    func apply(to p: inout Renderer.Params) {
+        p.zoom = zoom
+        p.fovDiagonal = fovDiagonal
+        p.lockYaw = lockYaw
+        p.lockPitch = lockPitch
+        p.lockRoll = lockRoll
+        p.autoRecenter = autoRecenter
+        p.steady = steady
+        p.useAirPods = useAirPods
+        p.sharpness = sharpness
     }
 }
 
@@ -58,9 +80,12 @@ func installHotKeys(_ keys: [(Int, () -> Void)]) {
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    static let coffeeURL = URL(string: "https://buymeacoffee.com/fuut4")!
+
     let settings = Settings()
     lazy var imu = IMU(savedBias: settings.gyroBias)
     let capture = Capture()
+    let headphones = Headphones()
     let fence = CursorFence()
     var renderer: Renderer?
     var monitor: VirtualMonitor?
@@ -68,9 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     let sourceMenu = NSMenu()
     let resolutionMenu = NSMenu()
+    let sharpnessMenu = NSMenu()
+    var airPodsItem: NSMenuItem!
     var toggles: [(NSMenuItem, () -> Bool)] = []
     var retryTimer: Timer?
     var openedSettings = false
+    var resolutionWork: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         imu.onConnect = { [weak self] in
@@ -79,11 +107,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.applyRefreshRate() }
         }
         imu.start()
+        if settings.useAirPods { headphones.start() }
         buildMenu()
         installHotKeys([
             (kVK_ANSI_R, { [weak self] in self?.recenter() }),
             (kVK_ANSI_T, { [weak self] in self?.togglePause() }),
-            (kVK_ANSI_Y, { [weak self] in self?.toggleYawOnly() }),
+            (kVK_ANSI_Y, { [weak self] in self?.toggleLockYaw() }),
+            (kVK_ANSI_P, { [weak self] in self?.toggleLockPitch() }),
+            (kVK_ANSI_E, { [weak self] in self?.toggleLockRoll() }),
             (kVK_ANSI_I, { [weak self] in self?.zoom(1.1) }),
             (kVK_ANSI_O, { [weak self] in self?.zoom(1 / 1.1) }),
             (kVK_ANSI_0, { [weak self] in self?.zoomReset() }),
@@ -114,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ note: Notification) {
         saveBias()
         imu.stop()
+        headphones.stop()
     }
 
     func saveBias() {
@@ -123,17 +155,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Displays
 
     func createMonitor() {
-        monitor = VirtualMonitor(resolution: settings.resolution)
+        monitor = VirtualMonitor()
         guard let monitor else {
             renderer?.show("Could not create the virtual display", seconds: 6)
             return
         }
         source = .display(monitor.displayID)
+        applyResolution()
         // WindowServer needs a moment before the new display can be positioned.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             Displays.arrange(virtual: monitor.displayID, glasses: Displays.glasses().map(Displays.id))
             self?.screensChanged()
         }
+    }
+
+    /// Picks the virtual display mode; in crisp mode one desktop pixel maps to one glasses pixel.
+    func applyResolution() {
+        guard let monitor else { return }
+        let glassesWidth = Double(Displays.glasses()?.frame.width ?? 1920)
+        let covered = glassesWidth * Renderer.baseWidth * settings.zoom
+        let mode = VirtualMonitor.logicalWidth(for: settings.resolution, coveredPixels: covered)
+        monitor.setMode(width: mode.width, hiDPI: mode.hiDPI)
+    }
+
+    /// Zooming in steps would otherwise switch resolution on every key press.
+    func applyResolutionSoon() {
+        resolutionWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.applyResolution() }
+        resolutionWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: work)
     }
 
     func applyRefreshRate() {
@@ -152,13 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if renderer == nil, let glasses, let gid {
             do {
-                let r = try Renderer(screen: glasses, displayID: gid, imu: imu, capture: capture)
-                r.update { [settings] in
-                    $0.zoom = settings.zoom
-                    $0.fovDiagonal = settings.fovDiagonal
-                    $0.yawOnly = settings.yawOnly
-                    $0.autoRecenter = settings.autoRecenter
-                }
+                let r = try Renderer(screen: glasses, displayID: gid, imu: imu, capture: capture, headphones: headphones)
+                r.update { settings.apply(to: &$0) }
                 r.show("RayNeoPin — ⌃⌥R recenter · ⌃⌥I / ⌃⌥O zoom · ⌃⌥Q quit", seconds: 5)
                 renderer = r
             } catch {
@@ -227,25 +272,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         menu.addItem(item("Recenter  ⌃⌥R", #selector(recenter)))
         menu.addItem(item("Calibrate Gyro (glasses on a table)…", #selector(calibrate)))
-        menu.addItem(.separator())
         menu.addItem(toggle("Pause Tracking  ⌃⌥T", #selector(togglePause)) { [weak self] in self?.renderer?.currentParams.paused == true })
-        menu.addItem(toggle("Yaw Only (no pitch/roll)  ⌃⌥Y", #selector(toggleYawOnly)) { [weak self] in self?.settings.yawOnly == true })
-        menu.addItem(toggle("Auto Drift Correction", #selector(toggleAutoRecenter)) { [weak self] in self?.settings.autoRecenter == true })
-        menu.addItem(toggle("Glasses at 120 Hz", #selector(toggleRefresh)) { [weak self] in self?.settings.highRefresh == true })
         menu.addItem(.separator())
+        menu.addItem(header("Lock an axis (it follows your head)"))
+        menu.addItem(toggle("Lock Yaw — left/right  ⌃⌥Y", #selector(toggleLockYaw)) { [weak self] in self?.settings.lockYaw == true })
+        menu.addItem(toggle("Lock Pitch — up/down  ⌃⌥P", #selector(toggleLockPitch)) { [weak self] in self?.settings.lockPitch == true })
+        menu.addItem(toggle("Lock Roll — tilt  ⌃⌥E", #selector(toggleLockRoll)) { [weak self] in self?.settings.lockRoll == true })
+        menu.addItem(.separator())
+        menu.addItem(header("Stability"))
+        menu.addItem(toggle("Steady Image (ignore heartbeat & micro-movements)", #selector(toggleSteady)) { [weak self] in self?.settings.steady == true })
+        airPodsItem = toggle("Use AirPods Head Tracking", #selector(toggleAirPods)) { [weak self] in self?.settings.useAirPods == true }
+        menu.addItem(airPodsItem)
+        menu.addItem(toggle("Auto Drift Correction (follows your gaze)", #selector(toggleAutoRecenter)) { [weak self] in self?.settings.autoRecenter == true })
+        menu.addItem(.separator())
+        menu.addItem(header("Display"))
         menu.addItem(item("Zoom In  ⌃⌥I", #selector(zoomIn)))
         menu.addItem(item("Zoom Out  ⌃⌥O", #selector(zoomOut)))
         menu.addItem(item("Reset Zoom  ⌃⌥0", #selector(zoomReset)))
+        menu.addItem(submenu("Resolution", resolutionMenu))
+        menu.addItem(submenu("Sharpness", sharpnessMenu))
+        menu.addItem(submenu("Source", sourceMenu))
+        menu.addItem(toggle("Glasses at 120 Hz", #selector(toggleRefresh)) { [weak self] in self?.settings.highRefresh == true })
         menu.addItem(item("FOV +1°  ⌃⌥L", #selector(fovUp)))
         menu.addItem(item("FOV −1°  ⌃⌥K", #selector(fovDown)))
         menu.addItem(.separator())
-        let src = NSMenuItem(title: "Source", action: nil, keyEquivalent: "")
-        src.submenu = sourceMenu
-        menu.addItem(src)
-        let res = NSMenuItem(title: "Virtual Display Resolution", action: nil, keyEquivalent: "")
-        res.submenu = resolutionMenu
-        menu.addItem(res)
-        menu.addItem(.separator())
+        menu.addItem(item("☕ Buy Me a Coffee — help pay Claude's bill", #selector(coffee)))
         menu.addItem(item("Check for Updates…", #selector(update)))
         menu.addItem(item("Quit  ⌃⌥Q", #selector(NSApp.terminate(_:)), target: NSApp))
         statusItem.menu = menu
@@ -257,6 +308,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
+    func header(_ title: String) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        i.isEnabled = false
+        return i
+    }
+
+    func submenu(_ title: String, _ menu: NSMenu) -> NSMenuItem {
+        let i = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        i.submenu = menu
+        return i
+    }
+
     func toggle(_ title: String, _ action: Selector, isOn: @escaping () -> Bool) -> NSMenuItem {
         let i = item(title, action)
         toggles.append((i, isOn))
@@ -265,12 +328,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         for (i, isOn) in toggles { i.state = isOn() ? .on : .off }
+        airPodsItem.title = "Use AirPods Head Tracking" + (
+            !settings.useAirPods ? ""
+                : headphones.isDenied ? " (no permission)"
+                : renderer?.isUsingAirPods == true ? " (active)"
+                : headphones.latestYaw() != nil ? " (learning — turn your head)"
+                : " (put your AirPods on)")
+
         resolutionMenu.removeAllItems()
         for r in VirtualMonitor.Resolution.allCases {
             let i = item(r.rawValue, #selector(pickResolution(_:)))
-            i.representedObject = r.rawValue
+            i.representedObject = "\(r)"
             i.state = settings.resolution == r ? .on : .off
             resolutionMenu.addItem(i)
+        }
+        sharpnessMenu.removeAllItems()
+        for (name, value) in [("Off", 0.0), ("Low", 0.3), ("Medium", 0.5), ("High", 0.8)] {
+            let i = item(name, #selector(pickSharpness(_:)))
+            i.representedObject = value
+            i.state = abs(settings.sharpness - value) < 0.01 ? .on : .off
+            sharpnessMenu.addItem(i)
         }
         Task { @MainActor in await refreshSources() }
     }
@@ -326,14 +403,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func pickResolution(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let r = VirtualMonitor.Resolution(rawValue: raw) else { return }
+        guard let raw = sender.representedObject as? String,
+              let r = VirtualMonitor.Resolution.allCases.first(where: { "\($0)" == raw }) else { return }
         settings.resolution = r
-        guard settings.sourceKind == "virtual" else { return }
-        monitor = nil // releasing it removes the old display
-        createMonitor()
+        applyResolution()
+    }
+
+    @objc func pickSharpness(_ sender: NSMenuItem) {
+        guard let v = sender.representedObject as? Double else { return }
+        settings.sharpness = v
+        renderer?.update { $0.sharpness = v }
     }
 
     // MARK: Actions
+
+    func setting(_ change: () -> Void, _ message: String) {
+        change()
+        renderer?.update { settings.apply(to: &$0) }
+        renderer?.show(message)
+    }
 
     @objc func recenter() { renderer?.recenter(); renderer?.show("Recentered", seconds: 1) }
 
@@ -350,19 +438,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         r.show(paused ? "Tracking paused (screen follows your head)" : "Tracking on")
     }
 
-    @objc func toggleYawOnly() {
-        settings.yawOnly.toggle()
-        let on = settings.yawOnly
-        renderer?.update { $0.yawOnly = on }
+    @objc func toggleLockYaw() {
+        setting({ settings.lockYaw.toggle() }, settings.lockYaw ? "Yaw unlocked" : "Yaw locked — follows your head left/right")
         renderer?.recenter()
-        renderer?.show(on ? "Yaw only" : "Full 3DoF")
+    }
+
+    @objc func toggleLockPitch() {
+        setting({ settings.lockPitch.toggle() }, settings.lockPitch ? "Pitch unlocked" : "Pitch locked — follows your head up/down")
+        renderer?.recenter()
+    }
+
+    @objc func toggleLockRoll() {
+        setting({ settings.lockRoll.toggle() }, settings.lockRoll ? "Roll unlocked" : "Roll locked — follows your head tilt")
+    }
+
+    @objc func toggleSteady() {
+        setting({ settings.steady.toggle() }, settings.steady ? "Steady image off" : "Steady image on")
+    }
+
+    @objc func toggleAirPods() {
+        setting({ settings.useAirPods.toggle() }, settings.useAirPods ? "AirPods head tracking off" : "AirPods head tracking on — turn your head a bit")
+        if settings.useAirPods { headphones.start() } else { headphones.stop() }
     }
 
     @objc func toggleAutoRecenter() {
-        settings.autoRecenter.toggle()
-        let on = settings.autoRecenter
-        renderer?.update { $0.autoRecenter = on }
-        renderer?.show(on ? "Auto drift correction on" : "Auto drift correction off")
+        setting({ settings.autoRecenter.toggle() }, settings.autoRecenter ? "Auto drift correction off" : "Auto drift correction on")
     }
 
     @objc func toggleRefresh() {
@@ -379,10 +479,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func zoomReset() { zoom(1 / settings.zoom) }
 
     func zoom(_ k: Double) {
-        settings.zoom = min(3, max(0.3, settings.zoom * k))
+        settings.zoom = min(2.4, max(0.6, settings.zoom * k))
         let z = settings.zoom
         renderer?.update { $0.zoom = z }
         renderer?.show(String(format: "Zoom %.0f%%", z * 100), seconds: 1)
+        if settings.resolution == .crisp { applyResolutionSoon() }
     }
 
     func fov(_ delta: Double) {
@@ -391,6 +492,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.update { $0.fovDiagonal = f }
         renderer?.show(String(format: "FOV %.0f°", f), seconds: 1)
     }
+
+    @objc func coffee() { NSWorkspace.shared.open(AppDelegate.coffeeURL) }
 
     /// Pulls the latest source, rebuilds, reinstalls and relaunches (see install.sh).
     @objc func update() {

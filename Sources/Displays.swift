@@ -73,27 +73,23 @@ enum Displays {
 
 /// An extra monitor that only exists in software (private CGVirtualDisplay API, as used by
 /// DeskPad, BetterDisplay and AirAnchor). It disappears when this object is released.
+///
+/// The display offers every 16:9 size below both at 1x and HiDPI, so the resolution can follow
+/// the zoom without recreating the display (which would throw its windows onto another screen).
 final class VirtualMonitor {
     enum Resolution: String, CaseIterable {
-        case fhd = "1920 × 1080"
-        case fhdHiDPI = "1920 × 1080 HiDPI (sharper)"
-        case qhd = "2560 × 1440"
-
-        var mode: (w: Int, h: Int, hiDPI: Bool) {
-            switch self {
-            case .fhd: return (1920, 1080, false)
-            case .fhdHiDPI: return (3840, 2160, true)
-            case .qhd: return (2560, 1440, false)
-            }
-        }
+        case crisp = "Crisp — follows zoom, text stays sharp (recommended)"
+        case fhd = "Fixed 1920 × 1080 — zoom scales text"
+        case fhdHiDPI = "Fixed 1920 × 1080 HiDPI"
+        case qhd = "Fixed 2560 × 1440"
     }
 
+    static let widths = [960, 1120, 1280, 1440, 1600, 1760, 1920, 2240, 2560, 3200, 3840]
+
     private let display: CGVirtualDisplay
-    let resolution: Resolution
     var displayID: CGDirectDisplayID { display.displayID }
 
-    init?(resolution: Resolution) {
-        self.resolution = resolution
+    init?() {
         let d = CGVirtualDisplayDescriptor()
         d.name = "RayNeoPin Display"
         d.maxPixelsWide = 3840
@@ -107,10 +103,32 @@ final class VirtualMonitor {
         display = CGVirtualDisplay(descriptor: d)
 
         let s = CGVirtualDisplaySettings()
-        let m = resolution.mode
-        s.hiDPI = m.hiDPI ? 1 : 0
-        s.modes = [CGVirtualDisplayMode(width: UInt(m.w), height: UInt(m.h), refreshRate: 120)]
+        s.hiDPI = 1
+        s.modes = VirtualMonitor.widths.map { CGVirtualDisplayMode(width: UInt($0), height: UInt($0 * 9 / 16), refreshRate: 120) }
         guard display.apply(s), display.displayID != 0 else { return nil }
+    }
+
+    /// Logical width of the mode to use: for `.crisp`, the one closest to how many glasses pixels
+    /// the screen covers, so one desktop pixel lands on one glasses pixel.
+    static func logicalWidth(for r: Resolution, coveredPixels: Double) -> (width: Int, hiDPI: Bool) {
+        switch r {
+        case .crisp: return (widths.min { abs(Double($0) - coveredPixels) < abs(Double($1) - coveredPixels) }!, false)
+        case .fhd: return (1920, false)
+        case .fhdHiDPI: return (1920, true)
+        case .qhd: return (2560, false)
+        }
+    }
+
+    func setMode(width: Int, hiDPI: Bool) {
+        let opts = [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary
+        guard let modes = CGDisplayCopyAllDisplayModes(displayID, opts) as? [CGDisplayMode],
+              let mode = modes.first(where: { $0.width == width && $0.height == width * 9 / 16 && $0.pixelWidth == (hiDPI ? 2 * width : width) })
+        else { return }
+        if let cur = CGDisplayCopyDisplayMode(displayID), cur.width == mode.width, cur.pixelWidth == mode.pixelWidth { return }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return }
+        CGConfigureDisplayWithDisplayMode(config, displayID, mode, nil)
+        CGCompleteDisplayConfiguration(config, .forSession)
     }
 }
 

@@ -2,6 +2,8 @@
 
 **3DoF spatial screen pinning for RayNeo Air 4 Pro glasses on macOS.**
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-fuut4-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fuut4)
+
 RayNeo doesn't ship head tracking for the Air 4 Pro on Mac. The glasses do have an IMU, though, and it speaks plain USB HID. RayNeoPin reads that sensor and gives you an extra monitor that stays fixed in space while you turn your head. You end up with two screens: your Mac's, and a pinned one in the glasses.
 
 > 🤖 **Made by Claude.** This project was written by [Claude](https://claude.com/claude-code) (Anthropic's AI model) in Claude Code, at [@Fuut4](https://github.com/Fuut4)'s request. In one session Claude worked out the HID protocol on real hardware, wrote the sensor fusion and renderer, and verified the result on the glasses. Expect rough edges. Issues and pull requests are very welcome.
@@ -19,7 +21,11 @@ RayNeo doesn't ship head tracking for the Air 4 Pro on Mac. The glasses do have 
   - a precise *Calibrate Gyro* runs with the glasses on a table;
   - continuous bias tracking (x-io Fusion style);
   - optional slow auto drift correction toward where you look.
-- Full 3DoF or yaw-only mode, smooth zoom, adjustable FOV, recenter.
+- **AirPods as a second sensor:** AirPods Pro, Max, 3rd gen, and Beats with head tracking. Their heading, from `CMHeadphoneMotionManager`, keeps the glasses' heading honest.
+- **Steady image:** micro-movements under 0.1° (heartbeat, breathing) are ignored, without the image ever jumping.
+- **Crisp resolution:** the virtual monitor changes resolution with the zoom, so one desktop pixel is one glasses pixel and text stays sharp at any size. There's also an adjustable sharpening filter.
+- **Per-axis locks:** lock yaw, pitch and roll independently. A locked axis follows your head; the rest stays pinned.
+- Smooth zoom, adjustable FOV, recenter.
 - Global hotkeys. They use Carbon, so they need no Accessibility permission.
 
 ## Requirements
@@ -44,6 +50,7 @@ The installer clones the source to `~/Library/Application Support/RayNeoPin/src`
    > **Keeping the permission across updates:** macOS ties the permission to the code signature. `build.sh` signs with your first *Apple Development* certificate if you have one, and then the permission survives updates. Free Apple ID certificates from Xcode work. Without a certificate the build is ad-hoc signed, and you'll need to re-enable the permission after each update. To pick a specific identity, set `SIGN_ID="…"`.
 3. Keep your head still for about 1 second while the gyro calibrates. The screen appears centered where you're looking.
 4. For the least drift, put the glasses on a table and choose **Calibrate Gyro (glasses on a table)…** once. The result is saved.
+5. Optional: wear your AirPods and allow motion access when macOS asks. Turn your head left and right a couple of times so the app learns how the AirPods' heading lines up with the glasses'. The menu then shows *Use AirPods Head Tracking (active)*.
 
 By default the pinned screen is a new virtual monitor, placed above your Mac's screen in the display arrangement. Move windows onto it as you would with any monitor. To mirror an existing display or pin one window instead, use **Source** in the menu.
 
@@ -53,7 +60,7 @@ By default the pinned screen is a new virtual monitor, placed above your Mac's s
 |---|---|
 | ⌃⌥R | Recenter |
 | ⌃⌥T | Pause tracking (screen follows the head) |
-| ⌃⌥Y | Yaw-only mode |
+| ⌃⌥Y / ⌃⌥P / ⌃⌥E | Lock yaw / pitch / roll |
 | ⌃⌥I / ⌃⌥O | Zoom in / out |
 | ⌃⌥0 | Reset zoom |
 | ⌃⌥L / ⌃⌥K | FOV +1° / −1° |
@@ -123,6 +130,12 @@ Several ideas were borrowed from [AirAnchor](https://github.com/jief123/AirAncho
 - **Side-by-side 3D mode** (3840×1080) is not handled.
 - **Packaging.** A signed and notarized release, so users don't have to build it themselves.
 - Only tested on one Air 4 Pro. Please report other models.
+
+## Support
+
+Claude wrote every line of this. Claude works for tokens, and [@Fuut4](https://github.com/Fuut4) pays for the tokens.
+
+**[☕ Buy Fuut4 a coffee](https://buymeacoffee.com/fuut4) so Claude can keep its job.** It's also in the app's menu, right above *Check for Updates…*.
 
 ## Contributing
 
