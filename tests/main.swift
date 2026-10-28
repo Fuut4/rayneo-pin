@@ -185,6 +185,30 @@ do {
     check(readyAt.map { $0 < 12 } == true, String(format: "AirPods calibration, 1 in 8 samples glitched, finished after %.1f s of movement (lag %.0f ms, fit %.0f%%, glitches skipped %d)",
                                                     readyAt ?? -1, cal.lag * 1000, cal.fitError * 100, cal.glitches))
     check(!progressDropped, "AirPods progress bar never went backwards")
+    // macOS re-centers AirPods yaw when Spatial Audio starts: a 10° jump of their world frame.
+    if readyAt != nil {
+        let W2 = simd_quatd(angle: 10 * deg, axis: SIMD3(0, 1, 0)) * W
+        var t2 = t
+        var history2 = history
+        var q2 = qg
+        let jumpsBefore = cal.jumps
+        while t2 < t + 2 {
+            let w = motion(t2)
+            q2 = simd_normalize(q2.extrapolated(w, 0.002))
+            history2.append(PoseSample(time: t2, q: q2, omega: w))
+            if t2 >= nextAirPods {
+                nextAirPods += 0.04
+                let h = history2
+                cal.ingest([Headphones.Sample(q: (t2 > t + 1 ? W2 : W).inverse * q2 * X.inverse, rate: X.act(w), angles: .zero,
+                                              time: t2 - lagTrue, arrival: t2)], glasses: { h.pose(at: $0) })
+            }
+            t2 += 0.002
+        }
+        let s2 = Headphones.Sample(q: W2.inverse * q2 * X.inverse, rate: .zero, angles: .zero, time: t2, arrival: t2)
+        let err2 = cal.pose(s2).map { shortestAngle($0, q2) } ?? .pi
+        check(cal.jumps > jumpsBefore && err2 < 2 * deg,
+              String(format: "AirPods 10° re-center (Spatial Audio) detected and absorbed: error %.2f°", err2 / deg))
+    }
     if readyAt != nil {
         let s = Headphones.Sample(q: W.inverse * qg * X.inverse, rate: .zero, angles: .zero, time: t, arrival: t)
         let err = cal.pose(s).map { shortestAngle($0, qg) } ?? .pi

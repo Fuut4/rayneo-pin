@@ -1041,7 +1041,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
 
     private var lastTelemetry = 0.0
     private var tFrames = 0, tDrawn = 0, tWindow = 0.0, tFPS = 0.0, tDrawnFPS = 0.0
-    private var tLast = (ready: false, reseats: 0, restarts: 0, ignored: false, tracking: TrackingMode.both, connected: false, asleep: false)
+    private var tLast = (ready: false, reseats: 0, restarts: 0, ignored: false, tracking: TrackingMode.both, connected: false, asleep: false, jumps: 0)
 
     private func recordTelemetry(_ s: IMU.Snapshot, airpods: Headphones.Sample?, pose: simd_quatd?, omega: SIMD3<Double>,
                                  usingAirPods: Bool, p: Params, f: Frame, now: Double) {
@@ -1066,8 +1066,9 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         }
         if calibration.reseats != tLast.reseats { t.event("airpods reseated in the ears: relearning", time: now) }
         if calibration.restarts != tLast.restarts { t.event("airpods calibration: poor fit, dropped older movement", time: now) }
+        if calibration.jumps != tLast.jumps { t.event("airpods reference jumped (Spatial Audio re-center, bud swap): re-referenced", time: now) }
         if ignored != tLast.ignored { t.event(ignored ? "airpods ignored (disagree with the glasses)" : "airpods trusted again", time: now) }
-        tLast = (calibration.ready, calibration.reseats, calibration.restarts, ignored, p.tracking, s.connected, raw.asleep)
+        tLast = (calibration.ready, calibration.reseats, calibration.restarts, ignored, p.tracking, s.connected, raw.asleep, calibration.jumps)
 
         guard now - lastTelemetry >= 0.05 else { return }
         lastTelemetry = now

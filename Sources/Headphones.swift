@@ -273,9 +273,16 @@ struct AirPodsCalibration {
 
             if let prev = lastSample, s.time > prev.time {
                 let dt = s.time - prev.time
-                // A big instant jump means the AirPods switched buds or were reseated.
-                let jump = (prev.q.inverse * s.q).angle
-                if min(jump, 2 * .pi - jump) > 0.5, dt < 0.2 { jumps += 1; wStale = true }
+                // Between two samples the attitude must turn by what the AirPods' own gyro measured. Any
+                // more is a jump of their reference, not motion: macOS re-centers AirPods yaw whenever
+                // an app starts Spatial Audio, and buds get swapped or reseated. Re-take the reference
+                // at once instead of letting the drift correction slowly drag the screen over.
+                let turned = (prev.q.inverse * s.q).angle
+                let measured = simd_length((s.rate + prev.rate) / 2) * dt
+                if dt < 0.2, abs(min(turned, 2 * .pi - turned) - measured) > max(2 * .pi / 180, 0.3 * measured) {
+                    jumps += 1
+                    wStale = true
+                }
                 // Convention: the body rate implied by consecutive quaternions should match rotationRate.
                 if speed > 0.3, dt < 0.1 {
                     let asBodyToWorld = s.q.angularVelocity(from: prev.q, dt: dt)
