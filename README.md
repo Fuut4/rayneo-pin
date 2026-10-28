@@ -45,7 +45,7 @@ Choose a setup under **Source**.
 
 - **Glasses Screen:** you work on the glasses' own desktop, placed above the Mac's screen in the display arrangement. RayNeoPin captures it and redraws it fixed in space. The hardware cursor is hidden while it's over the glasses. RayNeoPin draws its own cursor (current shape, at display rate) on the pinned screen in every setup.
 - **Ultrawide:** switches the glasses to side-by-side mode, so macOS sees one 3840×1080 display. It is rendered once per eye, as a screen twice as wide as your field of view. The glasses only offer 32:9 here.
-- **Virtual Display:** a separate virtual monitor; the glasses' own display is kept off-limits to the cursor. Set its size under **Resolution**:
+- **Virtual Display:** a separate virtual monitor. The glasses' own display is kept off-limits to the cursor, and any window macOS puts there is moved to the virtual monitor; this needs Accessibility permission. Set its size under **Resolution**:
   - *Crisp* (default): desktop pixels map 1:1 to glasses pixels at any zoom.
   - 16:9, 16:10, or ultrawide 21:9 / 32:9 / 32:10 (e.g. 3840×1200), all at 120 Hz. An ultrawide screen is wider than your field of view: turn your head, or zoom out to fit it.
   - *Manual*: pick the mode in **System Settings › Displays › RayNeoPin Display**, where every mode is listed.
@@ -140,7 +140,7 @@ Sleep and wake arrive as ack frames (`0xC8`) with `0x41` / `0x42` at byte 8. The
 | Gyro bias | Startup and table calibration, the value saved across launches, and rest-based refinement after [VQF](https://github.com/dlaidig/vqf) (gyro within 2 °/s of its 0.5 s low-pass, accelerometer within 0.5 m/s², ≥1.5 s). Unlike VQF, only corrections under 0.6 °/s are accepted, so slow head turns are not absorbed. |
 | Latency | Late latching (pose read after the drawable is acquired). Look-ahead is 10 ms + 0.45 × frame time, plus 7 ms for the bottom row (panel scan-out), as tuned in [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) for RayNeo. |
 | Micro-movements | 0.1° soft dead zone and motion-adaptive smoothing (cf. [OpenTrack Accela](https://github.com/opentrack/opentrack), [AirAnchor](https://github.com/jief123/AirAnchor)) |
-| AirPods ↔ glasses | Clock offset from rotation-speed correlation. Quaternion convention checked against `rotationRate`. Ear-mount rotation solved from paired angular velocities (Wahba's problem, Davenport q-method), plus a world-frame alignment. Headings are compared at each sample's own timestamp against a 5 s glasses pose history. Bud swaps are detected as jumps. |
+| AirPods ↔ glasses | Clock offset from rotation-speed correlation. Quaternion convention checked against `rotationRate`. Ear-mount rotation solved from paired angular velocities (Wahba's problem, Davenport q-method), plus a world-frame alignment. Headings are compared at each sample's own timestamp against a 5 s glasses pose history. Every sample is cross-checked against the glasses' gyro at the same instant. AirPods turning while the head doesn't (adjusting them, reconnecting, a bud swap) are ignored, and the glasses take over until the two agree again. A persistent disagreement is treated as a reseat, and the ear-mount rotation is relearned. The AirPods heading correction is capped at 0.5 °/s, so it can never make the screen jump. |
 
 ### Rendering
 

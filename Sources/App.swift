@@ -176,6 +176,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Our own cursor on the pinned screen, at display rate.
         let cursorTimer = Timer(timeInterval: 1 / 120, repeats: true) { [weak self] _ in self?.updateCursor() }
         RunLoop.main.add(cursorTimer, forMode: .common)
+        // Windows that end up on the fenced glasses display would be unreachable: move them out.
+        Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.rescueWindows() }
         // Display reconfigurations can move our windows without telling us; check every second.
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, let glasses = Displays.glasses() else { return }
@@ -231,6 +233,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Displays.arrange(above: monitor.displayID, right: Displays.glasses().map(Displays.id))
             self?.screensChanged()
         }
+    }
+
+    private var askedAccessibility = false
+
+    /// In setups where the glasses' own display only shows our rendering (virtual display, mirror),
+    /// any window macOS puts there is invisible and unreachable; move it to the screen you work on.
+    func rescueWindows() {
+        guard !settings.singleDisplay, let glasses = Displays.glasses() else { return }
+        let target = monitor.map { CGDisplayBounds($0.displayID) } ?? CGDisplayBounds(CGMainDisplayID())
+        let result = WindowRescue.move(from: CGDisplayBounds(Displays.id(of: glasses)), to: target,
+                                       askPermission: !askedAccessibility)
+        if result.needsPermission, !askedAccessibility {
+            askedAccessibility = true
+            renderer?.show("A window is stuck on the glasses' hidden display. Allow RayNeoPin in System Settings › Privacy & Security › Accessibility to move it out automatically.", seconds: 8)
+        }
+        if result.moved > 0 { renderer?.show("Moved \(result.moved) window\(result.moved == 1 ? "" : "s") off the glasses' hidden display", seconds: 3) }
     }
 
     /// Where the system cursor is on the captured display, and what it looks like (arrow, I-beam…).

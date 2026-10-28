@@ -155,6 +155,51 @@ final class VirtualMonitor {
     }
 }
 
+/// Moves other apps' windows off a display (the fenced glasses display, which only shows our
+/// rendering), keeping their relative position. Needs Accessibility permission.
+enum WindowRescue {
+    /// Returns how many windows were moved, and whether permission is missing.
+    static func move(from source: CGRect, to target: CGRect, askPermission: Bool) -> (moved: Int, needsPermission: Bool) {
+        let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var pids = Set<pid_t>()
+        for w in info {
+            guard (w[kCGWindowLayer as String] as? Int) == 0,
+                  let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != getpid(),
+                  let b = w[kCGWindowBounds as String] as? NSDictionary,
+                  let r = CGRect(dictionaryRepresentation: b), source.contains(CGPoint(x: r.midX, y: r.midY))
+            else { continue }
+            pids.insert(pid)
+        }
+        guard !pids.isEmpty else { return (0, false) }
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: askPermission] as CFDictionary
+        guard AXIsProcessTrustedWithOptions(options) else { return (0, true) }
+
+        var moved = 0
+        for pid in pids {
+            var value: CFTypeRef?
+            AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value)
+            for window in value as? [AXUIElement] ?? [] {
+                var p = CGPoint.zero, s = CGSize.zero
+                var pv: CFTypeRef?, sv: CFTypeRef?
+                AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &pv)
+                AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sv)
+                guard let pv, let sv else { continue }
+                AXValueGetValue(pv as! AXValue, .cgPoint, &p)
+                AXValueGetValue(sv as! AXValue, .cgSize, &s)
+                guard source.contains(CGPoint(x: p.x + s.width / 2, y: p.y + s.height / 2)) else { continue }
+                // Same relative spot on the target, kept fully inside it.
+                var np = CGPoint(x: target.minX + (p.x - source.minX) / source.width * target.width,
+                                 y: target.minY + (p.y - source.minY) / source.height * target.height)
+                np.x = min(max(np.x, target.minX), max(target.maxX - s.width, target.minX))
+                np.y = min(max(np.y, target.minY), max(target.maxY - s.height, target.minY))
+                if let nv = AXValueCreate(.cgPoint, &np),
+                   AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, nv) == .success { moved += 1 }
+            }
+        }
+        return (moved, false)
+    }
+}
+
 /// Cursor handling for the glasses' physical display:
 ///  - `blocked`: with a virtual monitor, the glasses' display only shows our rendering, so the
 ///    pointer (and dragged windows) are kept off it;

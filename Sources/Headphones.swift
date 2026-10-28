@@ -169,6 +169,9 @@ struct AirPodsCalibration {
     /// Bumped whenever W is recomputed, so users of the AirPods heading can re-reference.
     private(set) var wVersion = 0
     private var wStale = false // recompute W at the next sample, keeping the old one meanwhile
+    private var recentAgreement: [Bool] = [] // last 25 moving samples: did they match the glasses?
+    private var gate = true // reject disagreeing pairs; off while relearning after a reseat
+    private(set) var reseats = 0
 
     private var speeds: [(t: Double, w: Double)] = []
     private var pairs: [(a: SIMD3<Double>, b: SIMD3<Double>)] = []
@@ -248,7 +251,23 @@ struct AirPodsCalibration {
             }
 
             guard let g = glasses(glassesTime(s)) else { continue }
-            if speed > 0.25, simd_length(g.omega) > 0.25 {
+            // Only pairs where both devices really turned together (once X is known, they must agree).
+            // A single disagreement is a glitch; most recent ones disagreeing means the AirPods were
+            // reseated in the ears: X changed, so forget the old pairs and learn it again.
+            let agrees = X.map { simd_length(s.rate - $0.act(g.omega)) < max(0.35, 0.5 * simd_length(g.omega)) } ?? true
+            if speed > 0.25, simd_length(g.omega) > 0.25, X != nil, gate {
+                recentAgreement.append(agrees)
+                if recentAgreement.count > 25 { recentAgreement.removeFirst() }
+                if recentAgreement.count == 25, recentAgreement.filter({ !$0 }).count > 15 {
+                    pairs.removeAll()
+                    recentAgreement.removeAll()
+                    newPairs = 0
+                    gate = false
+                    seeded = false
+                    reseats += 1
+                }
+            }
+            if speed > 0.25, simd_length(g.omega) > 0.25, agrees || !gate {
                 pairs.append((g.omega, s.rate))
                 lastPairTime = s.arrival
                 if pairs.count > 3000 { pairs.removeFirst(pairs.count - 3000) }
@@ -274,6 +293,7 @@ struct AirPodsCalibration {
                 let mean = pairs.reduce(0) { $0 + simd_length($1.b) } / Double(pairs.count)
                 fitError = rms / max(mean, 1e-6)
                 if X == nil || fitError < 0.4 { X = x }
+                if fitError < 0.4 { gate = true }
                 // W depends on X: redo it while X is still improving.
                 if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
                    2 * .pi - (old.inverse * X).angle > 0.005 { wStale = true }
@@ -329,7 +349,9 @@ struct HeadingReference {
     mutating func update(glasses g: Double, airpods a: Double, dt: Double) {
         let o = wrapAngle(g + correction - a)
         guard let ref = offset else { offset = o; return }
-        correction -= wrapAngle(o - ref) * min(dt / 4, 1)
+        // Real gyro drift is well under 0.1 °/s; capping at 0.5 °/s means nothing can make the screen jump.
+        let maxStep = 0.5 * .pi / 180 * dt
+        correction -= min(max(wrapAngle(o - ref) * min(dt / 4, 1), -maxStep), maxStep)
     }
 }
 

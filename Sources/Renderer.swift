@@ -88,6 +88,11 @@ final class Renderer: NSObject {
     private var airPodsCalibrating = false // for start/finish sounds
     private var airPodsAnnounced = false // sounds/toast only for the first calibration, never for refinements
     private var lastWVersion = 0
+    // Cross-check of each AirPods sample against the glasses' gyro at the same instant.
+    private var airPodsDisturbedUntil = 0.0
+    private var airPodsWasDisturbed = false
+    private var devAirPodsMismatch = 0.0
+    private var devAirPodsGlitches = 0
     private var devAirPodsDelay = 0.0
     private var devYawGap: Double?
     private var hasPose = false
@@ -412,7 +417,28 @@ final class Renderer: NSObject {
             let fresh = headphones.drain()
             calibration.ingest(fresh, glasses: imu.pose(at:))
             airpods = headphones.latest()
-            if p.tracking == .both, calibration.ready {
+            // Both devices sit on the same head, so they must rotate alike. AirPods turning while the
+            // glasses don't (being adjusted in the ear, reconnecting, a bud swap) is not head motion:
+            // ignore them until they agree again, then take that as the new reference.
+            if calibration.ready {
+                for f in fresh {
+                    guard let g = imu.pose(at: calibration.glassesTime(f)) else { continue }
+                    let mismatch = simd_length(calibration.rate(f) - g.omega)
+                    devAirPodsMismatch = mismatch
+                    if mismatch > max(0.35, 0.5 * simd_length(g.omega)) {
+                        if CACurrentMediaTime() >= airPodsDisturbedUntil { devAirPodsGlitches += 1 }
+                        airPodsDisturbedUntil = CACurrentMediaTime() + 1.5
+                    }
+                }
+            }
+            let disturbed = CACurrentMediaTime() < airPodsDisturbedUntil
+            if airPodsWasDisturbed, !disturbed {
+                heading.reset()
+                calibration.realign()
+            }
+            airPodsWasDisturbed = disturbed
+            if disturbed { airpods = nil } // fall back to the glasses meanwhile
+            if p.tracking == .both, calibration.ready, !disturbed {
                 // Compare headings at the instant each AirPods sample was measured, so Bluetooth
                 // latency doesn't show up as a heading difference.
                 for f in fresh {
@@ -449,7 +475,7 @@ final class Renderer: NSObject {
                 ? "turn your head left/right and nod — a bit faster" : "keep turning and nodding"
             airPodsNote = "Calibrating AirPods  \(bar)  \(Int(calibration.progress * 100))%  — \(hint)"
         } else {
-            airPodsNote = p.tracking == .glasses || airpods != nil ? "" : "AirPods: no data — using glasses"
+            airPodsNote = p.tracking == .glasses || airpods != nil || airPodsWasDisturbed ? "" : "AirPods: no data — using glasses"
         }
 
         var pose: simd_quatd?
@@ -579,6 +605,10 @@ final class Renderer: NSObject {
         }
         if p.tracking == .both {
             lines.append("  heading     correction " + d(heading.correction) + "°   glasses−AirPods yaw " + (devYawGap.map { d($0) + "°" } ?? "—"))
+        }
+        if p.tracking != .glasses {
+            lines.append(String(format: "  cross-check rate mismatch %.1f °/s · glitches ignored %d · reseats relearned %d%@", devAirPodsMismatch * 180 / .pi,
+                                devAirPodsGlitches, calibration.reseats, CACurrentMediaTime() < airPodsDisturbedUntil ? " · IGNORING AIRPODS NOW" : ""))
         }
         lines.append("")
         lines.append("PIPELINE      pose " + (pose.map { ypr($0.ypr) } ?? "none"))
