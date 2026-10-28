@@ -12,3 +12,17 @@ jobs:
           swiftc --version
           swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
             Sources/*.swift -o RayNeoPin
+      - name: Compile the Metal shader (the app compiles it at runtime)
+        run: |
+          python3 - <<'PY'
+          import re, textwrap
+          s = open("Sources/Renderer.swift").read()
+          m = re.search(r'static let shader = """\n(.*?)\n\s*"""', s, re.S)
+          open("shader.metal", "w").write(textwrap.dedent(m.group(1)))
+          PY
+          xcrun -sdk macosx metal -c shader.metal -o shader.air
+      - name: Logic tests
+        run: |
+          swiftc -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
+            $(ls Sources/*.swift | grep -v main.swift) tests/main.swift -o logic-tests
+          ./logic-tests

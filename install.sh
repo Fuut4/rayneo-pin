@@ -3,6 +3,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | zsh
 #
+# Another branch (remembered for later updates; RAYNEOPIN_BRANCH=main goes back):
+#
+#   curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/test/everything/install.sh | RAYNEOPIN_BRANCH=test/everything zsh
+#
 # Keeps the source in ~/Library/Application Support/RayNeoPin/src, builds it, installs the app
 # to /Applications and relaunches it. Pass --force to rebuild even when already up to date.
 set -euo pipefail
@@ -23,12 +27,15 @@ main() {
   fi
 
   if [[ -d "$SRC/.git" ]]; then
+    BRANCH=${RAYNEOPIN_BRANCH:-$(git -C "$SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)}
     git -C "$SRC" fetch --quiet origin
-    git -C "$SRC" reset --quiet --hard origin/main
   else
+    BRANCH=${RAYNEOPIN_BRANCH:-main}
     mkdir -p "${SRC:h}"
     git clone --quiet "$REPO" "$SRC"
   fi
+  git -C "$SRC" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
+  git -C "$SRC" reset --quiet --hard "origin/$BRANCH"
 
   NEW=$(git -C "$SRC" rev-parse --short HEAD)
   OLD=$(cat "$DEST/Contents/Resources/revision" 2>/dev/null || echo none)
@@ -45,7 +52,7 @@ main() {
   rm -rf "$DEST"
   cp -R "$SRC/RayNeoPin.app" "$DEST"
   open "$DEST"
-  echo "RayNeoPin $NEW installed to $DEST ($OLD → $NEW)."
+  echo "RayNeoPin $NEW ($BRANCH) installed to $DEST ($OLD → $NEW)."
 }
 
 main "$@"
