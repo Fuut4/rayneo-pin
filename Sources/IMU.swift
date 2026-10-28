@@ -735,6 +735,13 @@ extension simd_quatd {
         return angle > 1e-9 && dt > 0 ? d.axis * angle / dt : .zero
     }
 
+    /// Look-ahead for display latency: like `extrapolated`, but never more than 3°, so a very fast
+    /// flick of the head can't throw the screen far past where it will stop.
+    func predicted(_ w: SIMD3<Double>, _ t: Double) -> simd_quatd {
+        let angle = simd_length(w) * t, limit = 3 * Double.pi / 180
+        return extrapolated(angle > limit ? w * (limit / angle) : w, t)
+    }
+
     /// Rotates further by angular velocity `w` (rad/s, body frame) for `t` seconds.
     func extrapolated(_ w: SIMD3<Double>, _ t: Double) -> simd_quatd {
         let l = simd_length(w)

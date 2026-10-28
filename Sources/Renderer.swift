@@ -219,6 +219,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     private var biasLearnTime = 0.0
     private var lastBiasApply = 0.0
     private var devBiasApplied = SIMD3<Double>.zero
+    private var devBiasRejected = 0
     private var scaleAG = SIMD3<Double>.zero
     private var scaleGG = SIMD3<Double>.zero
     private var devScaleUpdates = 0
@@ -645,6 +646,19 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         return t
     }
 
+    /// Live AirPods calibration state, for the Settings window.
+    struct AirPodsStatus {
+        var receiving = false, ready = false, active = false
+        var progress = 0.0, turned = 0.0, nodded = 0.0, lag = 0.0, fitError = 1.0
+        var glitches = 0
+        var hint = ""
+    }
+    private var airPodsStatusValue = AirPodsStatus()
+    var airPodsStatus: AirPodsStatus {
+        lock.lock(); defer { lock.unlock() }
+        return airPodsStatusValue
+    }
+
     /// True once AirPods headings are actually correcting the glasses.
     var isUsingAirPods: Bool {
         lock.lock(); defer { lock.unlock() }
@@ -726,6 +740,13 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         let p = params
         let recenterNow = recenterRequested
         recenterRequested = false
+        if airPodsResetRequested || (p.tracking == .glasses && devBiasApplied != .zero) {
+            // Whatever was learned from the AirPods goes with them.
+            imu.adjustBias(-devBiasApplied)
+            devBiasApplied = .zero
+            biasResidual = .zero
+            biasLearnTime = 0
+        }
         if airPodsResetRequested {
             airPodsResetRequested = false
             airPodsSeed = nil
@@ -861,6 +882,12 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             }
         }
         if usingAirPods != airPodsActive { lock.lock(); airPodsActive = usingAirPods; lock.unlock() }
+        if p.tracking != .glasses {
+            let st = AirPodsStatus(receiving: airpods != nil, ready: calibration.ready, active: usingAirPods, progress: calibration.progress,
+                                   turned: calibration.turned, nodded: calibration.nodded, lag: calibration.lag,
+                                   fitError: calibration.fitError, glitches: calibration.glitches, hint: calibration.hint)
+            lock.lock(); airPodsStatusValue = st; lock.unlock()
+        }
 
         // The Mac's camera: an absolute heading, so it can undo drift for good.
         if p.cameraDrift, let face {
@@ -876,6 +903,9 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         if let pose, !p.paused {
             let speed = simd_length(omega)
             omegaLP += (omega - omegaLP) * min(dt / 0.03, 1)
+            // While a fast turn stops, the smoothed rate lags behind and would keep "turning" past the
+            // stop (the screen overshoots, then snaps back): predict with whichever rate is slower.
+            let predictRate = simd_length(omega) < simd_length(omegaLP) ? omega : omegaLP
             if recenterNow || !hasPose {
                 let yp = pose.yawPitch
                 anchor = .yawPitch(yp.yaw, p.lockPitch ? 0 : yp.pitch)
@@ -896,16 +926,16 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                 let still = min(dt / 0.25, 1)
                 if p.predictFiltered {
                     smoothed = simd_slerp(smoothed, pose, still + (1 - still) * t)
-                    filtered = smoothed.extrapolated(omegaLP, prediction)
+                    filtered = smoothed.predicted(predictRate, prediction)
                 } else {
                     // Late-latched pose: sampled right before drawing, extrapolated over the display latency.
-                    smoothed = simd_slerp(smoothed, pose.extrapolated(omega, prediction), still + (1 - still) * t)
+                    smoothed = simd_slerp(smoothed, pose.predicted(omega, prediction), still + (1 - still) * t)
                     filtered = smoothed
                 }
             case .oneEuro:
                 // Predicting from the filtered pose: extrapolating raw gyro noise amplifies jitter.
-                filtered = p.predictFiltered ? euro.filter(pose, dt: dt).extrapolated(omegaLP, prediction)
-                    : euro.filter(pose.extrapolated(omega, prediction), dt: dt)
+                filtered = p.predictFiltered ? euro.filter(pose, dt: dt).predicted(predictRate, prediction)
+                    : euro.filter(pose.predicted(omega, prediction), dt: dt)
             }
 
             // Steady image: ignore movements under 0.1° (heartbeat, breathing) without ever jumping,
@@ -1013,15 +1043,28 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             }
         }
         let now = CACurrentMediaTime()
+        // Only trust a precise calibration, and only believe a plausible bias: a real gyro bias left
+        // after calibration is a few hundredths of a °/s. A big, steady difference means the AirPods
+        // calibration is off, and learning from it would make the screen slide sideways by itself.
+        let deg = Double.pi / 180
+        let trusted = calibration.fitError < 0.15 && calibration.lagCorrelation > 0.8
         if p.airPodsBias, biasLearnTime > 10, now - lastBiasApply > 2 {
             lastBiasApply = now
-            let limit = 0.01 * .pi / 180
-            let delta = (biasResidual * 0.3).clamped(lowerBound: SIMD3(repeating: -limit), upperBound: SIMD3(repeating: limit))
-            imu.adjustBias(delta)
-            biasResidual -= delta
-            devBiasApplied += delta
+            if !trusted || simd_length(biasResidual) > 0.3 * deg {
+                biasResidual = .zero
+                biasLearnTime = 0
+                devBiasRejected += 1
+            } else {
+                let step = 0.01 * deg, total = 0.15 * deg
+                var delta = (biasResidual * 0.3).clamped(lowerBound: SIMD3(repeating: -step), upperBound: SIMD3(repeating: step))
+                // Never move the bias more than 0.15 °/s in total from what the glasses calibrated.
+                delta = (devBiasApplied + delta).clamped(lowerBound: SIMD3(repeating: -total), upperBound: SIMD3(repeating: total)) - devBiasApplied
+                imu.adjustBias(delta)
+                biasResidual -= delta
+                devBiasApplied += delta
+            }
         }
-        if p.airPodsScale, scaleGG.max() > 300 {
+        if p.airPodsScale, trusted, scaleGG.max() > 300 {
             var c = SIMD3<Double>(repeating: 1)
             for i in 0..<3 where scaleGG[i] > 100 { c[i] = min(max(scaleAG[i] / scaleGG[i], 0.98), 1.02) }
             imu.scale = imu.scale * (1 + (c - 1) * 0.5)
@@ -1194,7 +1237,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         if p.tracking != .glasses {
             lines.append(String(format: "  cross-check rate mismatch %.1f °/s · glitches ignored %d · reseats relearned %d%@", devAirPodsMismatch * 180 / .pi,
                                 devAirPodsGlitches, calibration.reseats, CACurrentMediaTime() < airPodsDisturbedUntil ? " · IGNORING AIRPODS NOW" : ""))
-            lines.append("  bias learn  residual " + v(biasResidual) + String(format: "   (%.0f s)   applied ", biasLearnTime) + v(devBiasApplied))
+            lines.append("  bias learn  residual " + v(biasResidual) + String(format: "   (%.0f s, rejected %d)   applied ", biasLearnTime, devBiasRejected) + v(devBiasApplied))
         }
         if p.cameraDrift {
             lines.append("CAMERA        " + (devFace.map { String(format: "face yaw %+.1f° pitch %+.1f° · %@", $0.yaw * 180 / .pi, $0.pitch * 180 / .pi,

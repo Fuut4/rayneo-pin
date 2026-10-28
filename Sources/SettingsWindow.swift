@@ -341,6 +341,28 @@ struct SettingsView: View {
                 }
                 ToggleRow(title: "Steady image", detail: "Ignores heartbeat and micro-movements under 0.1°.", isOn: m.value(\.steady))
             }
+            if m.app.settings.tracking != .glasses {
+                Section("AirPods calibration") {
+                    TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+                        let st = m.app.renderer?.airPodsStatus ?? Renderer.AirPodsStatus()
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Circle().fill(st.active ? .green : st.receiving ? .orange : .red).frame(width: 8, height: 8)
+                                Text(st.active ? "Correcting drift" : st.ready ? "Calibrated" : st.receiving ? "Calibrating — \(st.hint)" : "No data — put the AirPods on")
+                                    .font(.headline)
+                            }
+                            ProgressView(value: st.progress) { Text("Overall") }
+                            HStack(spacing: 16) {
+                                ProgressView(value: st.turned) { Text("Turn left and right").font(.caption) }
+                                ProgressView(value: st.nodded) { Text("Nod up and down").font(.caption) }
+                            }
+                            Text(String(format: "Bluetooth delay %.0f ms · fit error %.0f%% · glitches skipped %d", st.lag * 1000, st.fitError * 100, st.glitches))
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
             Section("Follow your head on these axes") {
                 ToggleRow(title: "Yaw — left/right", detail: "⌃⌥Y", isOn: m.value(\.lockYaw) { _ in m.app.renderer?.recenter() })
                 ToggleRow(title: "Pitch — up/down", detail: "⌃⌥P", isOn: m.value(\.lockPitch) { _ in m.app.renderer?.recenter() })
