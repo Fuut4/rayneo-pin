@@ -256,8 +256,8 @@ struct SettingsView: View {
                 }
                 Row(title: "Height", detail: "Raise or lower the screen. ⌃⌥↑ / ⌃⌥↓") {
                     HStack {
-                        Slider(value: m.value(\.screenPitch), in: -30...30, step: 1).frame(width: 200)
-                        Text("\(Int(m.app.settings.screenPitch))°").monospacedDigit().frame(width: 44, alignment: .trailing)
+                        Slider(value: m.value(\.screenPitch), in: -30...30).frame(width: 200)
+                        Text("\(Int(m.app.settings.screenPitch.rounded()))°").monospacedDigit().frame(width: 44, alignment: .trailing)
                     }
                 }
                 Row(title: "Field of view", detail: "If the screen slides when you turn, adjust this. ⌃⌥L / ⌃⌥K") {
