@@ -263,6 +263,26 @@ extension simd_quatd {
         simd_quatd(angle: yaw, axis: SIMD3(0, 1, 0)) * simd_quatd(angle: pitch, axis: SIMD3(1, 0, 0))
     }
 
+    /// (yaw, pitch, roll): yaw about world up, then pitch about x, then roll about z.
+    var ypr: SIMD3<Double> {
+        let yp = yawPitch
+        let r = simd_quatd.yawPitch(yp.yaw, yp.pitch).inverse * self // what's left is roll about z
+        let roll = 2 * atan2(r.imag.z, r.real)
+        return SIMD3(yp.yaw, yp.pitch, atan2(sin(roll), cos(roll)))
+    }
+
+    static func ypr(_ a: SIMD3<Double>) -> simd_quatd {
+        yawPitch(a.x, a.y) * simd_quatd(angle: a.z, axis: SIMD3(0, 0, 1))
+    }
+
+    /// Body-frame angular velocity that turns `from` into `self` in `dt` seconds.
+    func angularVelocity(from: simd_quatd, dt: Double) -> SIMD3<Double> {
+        var d = from.inverse * self
+        if d.real < 0 { d = simd_quatd(vector: -d.vector) } // shortest way round
+        let angle = d.angle
+        return angle > 1e-9 && dt > 0 ? d.axis * angle / dt : .zero
+    }
+
     /// Rotates further by angular velocity `w` (rad/s, body frame) for `t` seconds.
     func extrapolated(_ w: SIMD3<Double>, _ t: Double) -> simd_quatd {
         let l = simd_length(w)

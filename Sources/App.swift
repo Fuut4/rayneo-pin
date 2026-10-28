@@ -26,7 +26,10 @@ final class Settings {
     var lockRoll: Bool { get { bool("lockRoll", d.bool(forKey: "yawOnly")) } set { d.set(newValue, forKey: "lockRoll") } }
     var autoRecenter: Bool { get { bool("autoDriftCorrection", false) } set { d.set(newValue, forKey: "autoDriftCorrection") } }
     var steady: Bool { get { bool("steady", true) } set { d.set(newValue, forKey: "steady") } }
-    var useAirPods: Bool { get { bool("useAirPods", true) } set { d.set(newValue, forKey: "useAirPods") } }
+    var tracking: TrackingMode {
+        get { TrackingMode(rawValue: d.string(forKey: "tracking") ?? "") ?? (bool("useAirPods", true) ? .both : .glasses) }
+        set { d.set(newValue.rawValue, forKey: "tracking") }
+    }
     var sharpness: Double { get { double("sharpness", 0.5) } set { d.set(newValue, forKey: "sharpness") } }
     var highRefresh: Bool { get { bool("highRefresh", true) } set { d.set(newValue, forKey: "highRefresh") } }
     var resolution: VirtualMonitor.Resolution {
@@ -48,7 +51,7 @@ final class Settings {
         p.lockRoll = lockRoll
         p.autoRecenter = autoRecenter
         p.steady = steady
-        p.useAirPods = useAirPods
+        p.tracking = tracking
         p.sharpness = sharpness
     }
 }
@@ -94,7 +97,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let sourceMenu = NSMenu()
     let resolutionMenu = NSMenu()
     let sharpnessMenu = NSMenu()
-    var airPodsItem: NSMenuItem!
+    let trackingMenu = NSMenu()
+    let airPodsMenu = NSMenu()
+    var pairedHeadphones: [HeadphoneDevice] = []
     var toggles: [(NSMenuItem, () -> Bool)] = []
     var retryTimer: Timer?
     var openedSettings = false
@@ -107,7 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.applyRefreshRate() }
         }
         imu.start()
-        if settings.useAirPods { headphones.start() }
+        if settings.tracking != .glasses { headphones.start() }
         buildMenu()
         installHotKeys([
             (kVK_ANSI_R, { [weak self] in self?.recenter() }),
@@ -281,8 +286,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(header("Stability"))
         menu.addItem(toggle("Steady Image (ignore heartbeat & micro-movements)", #selector(toggleSteady)) { [weak self] in self?.settings.steady == true })
-        airPodsItem = toggle("Use AirPods Head Tracking", #selector(toggleAirPods)) { [weak self] in self?.settings.useAirPods == true }
-        menu.addItem(airPodsItem)
+        menu.addItem(submenu("Head Tracking Source", trackingMenu))
+        menu.addItem(submenu("AirPods", airPodsMenu))
         menu.addItem(toggle("Auto Drift Correction (follows your gaze)", #selector(toggleAutoRecenter)) { [weak self] in self?.settings.autoRecenter == true })
         menu.addItem(.separator())
         menu.addItem(header("Display"))
@@ -328,12 +333,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         for (i, isOn) in toggles { i.state = isOn() ? .on : .off }
-        airPodsItem.title = "Use AirPods Head Tracking" + (
-            !settings.useAirPods ? ""
-                : headphones.isDenied ? " (no permission)"
-                : renderer?.isUsingAirPods == true ? " (active)"
-                : headphones.latestYaw() != nil ? " (learning — turn your head)"
-                : " (put your AirPods on)")
+        trackingMenu.removeAllItems()
+        for mode in TrackingMode.allCases {
+            let i = item(mode.title, #selector(pickTracking(_:)))
+            i.representedObject = mode.rawValue
+            i.state = settings.tracking == mode ? .on : .off
+            trackingMenu.addItem(i)
+        }
+        if settings.tracking != .glasses {
+            trackingMenu.addItem(.separator())
+            trackingMenu.addItem(header(
+                headphones.isDenied ? "AirPods: motion access denied (System Settings › Privacy & Security › Motion & Fitness)"
+                    : renderer?.isUsingAirPods == true ? "AirPods: active"
+                    : headphones.latest() != nil ? "AirPods: learning — turn your head left and right"
+                    : "AirPods: no head tracking data — put them on"))
+        }
+        rebuildAirPodsMenu()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let found = HeadphoneCatalog.paired()
+            DispatchQueue.main.async {
+                self?.pairedHeadphones = found
+                self?.rebuildAirPodsMenu()
+            }
+        }
 
         resolutionMenu.removeAllItems()
         for r in VirtualMonitor.Resolution.allCases {
@@ -350,6 +372,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sharpnessMenu.addItem(i)
         }
         Task { @MainActor in await refreshSources() }
+    }
+
+    /// Lists paired Apple headphones; picking one makes it the sound output, which is what
+    /// CoreMotion follows for head tracking.
+    func rebuildAirPodsMenu() {
+        airPodsMenu.removeAllItems()
+        airPodsMenu.addItem(header("Head tracking follows your current sound output"))
+        let current = HeadphoneCatalog.currentOutputAddress()
+        if pairedHeadphones.isEmpty { airPodsMenu.addItem(header("Looking for paired AirPods…")) }
+        for d in pairedHeadphones {
+            let support = d.headTracking == false ? " — no head tracking" : d.headTracking == nil ? " — head tracking unknown" : ""
+            let state = d.address.uppercased() == current ? "" : d.connected ? " — switch to these" : " — connect & use"
+            let i = item("\(d.name) (\(d.model))\(support)\(state)", #selector(pickHeadphones(_:)))
+            i.representedObject = d.address
+            i.state = d.address.uppercased() == current ? .on : .off
+            i.isEnabled = d.headTracking != false
+            airPodsMenu.addItem(i)
+        }
+        airPodsMenu.addItem(.separator())
+        airPodsMenu.addItem(header("Works with: \(HeadphoneCatalog.supportedSummary)"))
     }
 
     @MainActor func refreshSources() async {
@@ -456,9 +498,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setting({ settings.steady.toggle() }, settings.steady ? "Steady image off" : "Steady image on")
     }
 
-    @objc func toggleAirPods() {
-        setting({ settings.useAirPods.toggle() }, settings.useAirPods ? "AirPods head tracking off" : "AirPods head tracking on — turn your head a bit")
-        if settings.useAirPods { headphones.start() } else { headphones.stop() }
+    @objc func pickTracking(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let mode = TrackingMode(rawValue: raw) else { return }
+        let hint = mode == .glasses ? "" : " — turn your head left and right a couple of times"
+        setting({ settings.tracking = mode }, "Head tracking: \(mode.title)\(hint)")
+        if mode == .glasses { headphones.stop() } else { headphones.start() }
+        renderer?.recenter()
+    }
+
+    @objc func pickHeadphones(_ sender: NSMenuItem) {
+        guard let address = sender.representedObject as? String,
+              let device = pairedHeadphones.first(where: { $0.address == address }) else { return }
+        renderer?.show("Connecting \(device.name)…", seconds: 10)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = HeadphoneCatalog.use(device)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.renderer?.show(ok ? "Using \(device.name) for sound and head tracking" : "Couldn't connect \(device.name) — is it nearby and out of its case?", seconds: 4)
+                if ok, self.settings.tracking == .glasses {
+                    self.settings.tracking = .both
+                    self.renderer?.update { self.settings.apply(to: &$0) }
+                }
+                // CoreMotion picks the new route up on restart.
+                self.headphones.stop()
+                if self.settings.tracking != .glasses { self.headphones.start() }
+            }
+        }
     }
 
     @objc func toggleAutoRecenter() {

@@ -21,7 +21,11 @@ RayNeo doesn't ship head tracking for the Air 4 Pro on Mac. The glasses do have 
   - a precise *Calibrate Gyro* runs with the glasses on a table;
   - continuous bias tracking (x-io Fusion style);
   - optional slow auto drift correction toward where you look.
-- **AirPods as a second sensor:** AirPods Pro, Max, 3rd gen, and Beats with head tracking. Their heading, from `CMHeadphoneMotionManager`, keeps the glasses' heading honest.
+- **AirPods head tracking:** works with AirPods Pro (all), AirPods 3 & 4, AirPods Max and Beats Fit Pro. Under **Head Tracking Source** you choose:
+  - *Glasses Only*;
+  - *AirPods Only*;
+  - *Glasses + AirPods*: the AirPods' heading keeps the glasses' heading from drifting.
+- **Switch between AirPods:** pick any paired pair under **AirPods**. The app shows each pair's model and whether it supports head tracking, then connects it and makes it your sound output, because that's what macOS head tracking follows. The axis mapping is learned from your own head movements, so no per-model tables are needed.
 - **Steady image:** micro-movements under 0.1° (heartbeat, breathing) are ignored, without the image ever jumping.
 - **Crisp resolution:** the virtual monitor changes resolution with the zoom, so one desktop pixel is one glasses pixel and text stays sharp at any size. There's also an adjustable sharpening filter.
 - **Per-axis locks:** lock yaw, pitch and roll independently. A locked axis follows your head; the rest stays pinned.
@@ -50,7 +54,7 @@ The installer clones the source to `~/Library/Application Support/RayNeoPin/src`
    > **Keeping the permission across updates:** macOS ties the permission to the code signature. `build.sh` signs with your first *Apple Development* certificate if you have one, and then the permission survives updates. Free Apple ID certificates from Xcode work. Without a certificate the build is ad-hoc signed, and you'll need to re-enable the permission after each update. To pick a specific identity, set `SIGN_ID="…"`.
 3. Keep your head still for about 1 second while the gyro calibrates. The screen appears centered where you're looking.
 4. For the least drift, put the glasses on a table and choose **Calibrate Gyro (glasses on a table)…** once. The result is saved.
-5. Optional: wear your AirPods and allow motion access when macOS asks. Turn your head left and right a couple of times so the app learns how the AirPods' heading lines up with the glasses'. The menu then shows *Use AirPods Head Tracking (active)*.
+5. Optional: wear your AirPods and allow motion access when macOS asks. Turn your head left and right a couple of times so the app learns how the AirPods line up with the glasses. **Head Tracking Source** then shows *AirPods: active*. To use different AirPods, pick them under **AirPods**.
 
 By default the pinned screen is a new virtual monitor, placed above your Mac's screen in the display arrangement. Move windows onto it as you would with any monitor. To mirror an existing display or pin one window instead, use **Source** in the menu.
 
@@ -86,6 +90,9 @@ cd rayneo-pin
 
 # Let screenshots see the glasses window (it's hidden from capture by default)
 RAYNEOPIN_DEBUG=1 ./RayNeoPin.app/Contents/MacOS/RayNeoPin
+
+# Paired AirPods, their model and head tracking support (* = current sound output)
+./RayNeoPin.app/Contents/MacOS/RayNeoPin --list-headphones
 
 # Dump raw HID reports
 swiftc -O tools/probe.swift -o probe && ./probe 3 --enable

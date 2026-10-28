@@ -10,6 +10,18 @@ import Metal
 import QuartzCore
 import simd
 
+enum TrackingMode: String, CaseIterable {
+    case glasses, airpods, both
+
+    var title: String {
+        switch self {
+        case .glasses: return "Glasses Only"
+        case .airpods: return "AirPods Only"
+        case .both: return "Glasses + AirPods (recommended)"
+        }
+    }
+}
+
 final class Renderer: NSObject {
     struct Params {
         var zoom = 1.0
@@ -21,7 +33,7 @@ final class Renderer: NSObject {
         var autoRecenter = false
         var steady = true
         var sharpness = 0.5
-        var useAirPods = true
+        var tracking = TrackingMode.both
         var paused = false
     }
 
@@ -60,6 +72,7 @@ final class Renderer: NSObject {
     private var smoothed = simd_quatd.identity
     private var steadyPose = simd_quatd.identity
     private var heading = HeadingReference()
+    private var alignment = AirPodsAlignment()
     private var hasPose = false
     private var zoom = 1.0
     private var gazeYawAvg = 0.0
@@ -222,21 +235,42 @@ final class Renderer: NSObject {
         lock.unlock()
 
         let s = imu.snapshot()
-        updateHUD(notice ?? toastText ?? status(s))
+        updateHUD(notice ?? toastText ?? status(s, p))
+
+        // Pose source: the glasses' IMU, the AirPods, or the glasses corrected by the AirPods' heading.
+        let airpods = p.tracking != .glasses ? headphones.latest() : nil
+        if let airpods { alignment.observe(glasses: s.ready ? s.q.ypr : nil, airpods: airpods.last.angles) }
+        var pose: simd_quatd?
+        var omega = SIMD3<Double>.zero
+        var usingAirPods = false
+        switch p.tracking {
+        case .glasses, .both:
+            guard s.ready else { break }
+            pose = s.q
+            omega = s.omega
+            if let airpods, alignment.confident {
+                heading.update(glasses: s.q.yawPitch.yaw, airpods: alignment.aligned(airpods.last.angles).x,
+                               dt: dt, speed: simd_length(s.omega))
+                pose = simd_quatd(angle: heading.correction, axis: SIMD3(0, 1, 0)) * s.q
+                usingAirPods = true
+            }
+        case .airpods:
+            guard let airpods else { break }
+            let q = alignment.pose(airpods.last.angles)
+            if let prev = airpods.previous, airpods.last.time > prev.time {
+                omega = q.angularVelocity(from: alignment.pose(prev.angles), dt: airpods.last.time - prev.time)
+            }
+            // AirPods report at a lower rate than we draw: bring the last sample up to now.
+            pose = q.extrapolated(omega, min(CACurrentMediaTime() - airpods.last.time, 0.1))
+            usingAirPods = true
+        }
+        if usingAirPods != airPodsActive { lock.lock(); airPodsActive = usingAirPods; lock.unlock() }
 
         var head = simd_quatd.identity
-        if s.ready, !p.paused {
-            let speed = simd_length(s.omega)
-
-            // Second heading reference from AirPods, applied as a rotation about world up.
-            let airpods = p.useAirPods ? headphones.latestYaw() : nil
-            heading.update(glasses: s.q.yawPitch.yaw, airpods: airpods, dt: dt, speed: speed)
-            let usingAirPods = airpods != nil && heading.locked
-            if usingAirPods != airPodsActive { lock.lock(); airPodsActive = usingAirPods; lock.unlock() }
-            let corrected = usingAirPods ? simd_quatd(angle: heading.correction, axis: SIMD3(0, 1, 0)) * s.q : s.q
-
+        if let pose, !p.paused {
+            let speed = simd_length(omega)
             // Late-latched pose: sampled right before drawing, extrapolated over the display latency.
-            let predicted = corrected.extrapolated(s.omega, p.prediction)
+            let predicted = pose.extrapolated(omega, p.prediction)
             if recenterNow || !hasPose {
                 let yp = predicted.yawPitch
                 anchor = .yawPitch(yp.yaw, p.lockPitch ? 0 : yp.pitch)
@@ -264,7 +298,7 @@ final class Renderer: NSObject {
 
             if p.autoRecenter { absorbDrift(anchor.inverse * steadyPose, dt) }
             head = applyLocks(anchor.inverse * steadyPose, p)
-        } else if !s.ready {
+        } else if pose == nil {
             hasPose = false
         }
 
@@ -275,11 +309,8 @@ final class Renderer: NSObject {
     /// Locked axes follow the head: drop them from the head rotation (yaw, then pitch, then roll).
     private func applyLocks(_ rel: simd_quatd, _ p: Params) -> simd_quatd {
         guard p.lockYaw || p.lockPitch || p.lockRoll else { return rel }
-        let yp = rel.yawPitch
-        let r = simd_quatd.yawPitch(yp.yaw, yp.pitch).inverse * rel // what's left is roll about -z
-        let roll = 2 * atan2(r.imag.z, r.real)
-        return simd_quatd.yawPitch(p.lockYaw ? 0 : yp.yaw, p.lockPitch ? 0 : yp.pitch)
-            * simd_quatd(angle: p.lockRoll ? 0 : roll, axis: SIMD3(0, 0, 1))
+        let a = rel.ypr
+        return .ypr(SIMD3(p.lockYaw ? 0 : a.x, p.lockPitch ? 0 : a.y, p.lockRoll ? 0 : a.z))
     }
 
     /// Residual gyro drift slowly rotates the world. Most of the time you look at the screen, so
@@ -295,7 +326,10 @@ final class Renderer: NSObject {
         gazeYawAvg -= step
     }
 
-    private func status(_ s: IMU.Snapshot) -> String {
+    private func status(_ s: IMU.Snapshot, _ p: Params) -> String {
+        if p.tracking == .airpods {
+            return headphones.latest() == nil ? "Waiting for AirPods head tracking — put them on, or pick them under AirPods in the menu" : ""
+        }
         guard s.connected else { return "Glasses not detected (USB)" }
         switch s.state {
         case .calibrating(let p): return "Calibrating… keep your head still (\(Int(p * 100))%)"

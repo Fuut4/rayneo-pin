@@ -1,6 +1,7 @@
 //   RayNeoPin.app              menu bar app (eyeglasses icon)
 //   RayNeoPin --imu-test       print orientation to the terminal, no rendering
 //   RayNeoPin --check-permission  exit 0 if Screen Recording is granted (used for auto-relaunch)
+//   RayNeoPin --list-headphones   paired AirPods, their model and head tracking support
 
 import AppKit
 import CoreMotion
@@ -8,6 +9,13 @@ import simd
 
 if CommandLine.arguments.contains("--check-permission") {
     exit(CGPreflightScreenCaptureAccess() ? 0 : 1)
+} else if CommandLine.arguments.contains("--list-headphones") {
+    let current = HeadphoneCatalog.currentOutputAddress()
+    for d in HeadphoneCatalog.paired() {
+        let tracking = d.headTracking.map { $0 ? "head tracking" : "no head tracking" } ?? "head tracking unknown"
+        print("\(d.address.uppercased() == current ? "*" : " ") \(d.name) — \(d.model) — \(tracking) — \(d.connected ? "connected" : "not connected")")
+    }
+    print("* = current sound output (what head tracking follows)")
 } else if CommandLine.arguments.contains("--imu-test") {
     setvbuf(stdout, nil, _IOLBF, 0)
     let imu = IMU(savedBias: Settings().gyroBias)
