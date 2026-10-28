@@ -1,7 +1,11 @@
 name: Build
 on:
-  push:
+  push: # also gives pull requests from this repository their check
   pull_request:
+    types: [opened, reopened] # forks; same-repo PRs use the push run
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true # only the newest commit matters
 permissions:
   contents: write # the render lab publishes its results to the lab-results branch
 jobs:
