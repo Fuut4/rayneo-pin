@@ -23,7 +23,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>RayNeoPin</string>
   <key>CFBundleExecutable</key><string>RayNeoPin</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2</string>
+  <key>CFBundleShortVersionString</key><string>0.3</string>
   <key>CFBundleVersion</key><string>$REVISION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
@@ -33,7 +33,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 PLIST
 echo "$REVISION" > "$APP/Contents/Resources/revision"
 
-swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 main.swift -o "$APP/Contents/MacOS/RayNeoPin"
+swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
+  Sources/*.swift -o "$APP/Contents/MacOS/RayNeoPin"
 
 SIGN_ID=${SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/ {print $2; exit}')}
 if [[ -n "$SIGN_ID" ]]; then
