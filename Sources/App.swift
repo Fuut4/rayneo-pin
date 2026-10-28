@@ -768,7 +768,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settingsWindow == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(model: SettingsModel(self))))
             w.title = "RayNeoPin Settings"
-            w.styleMask = [.titled, .closable, .miniaturizable]
+            // Sidebar up to the top edge, traffic lights over it (Magnet / System Settings style).
+            w.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+            w.titlebarAppearsTransparent = true
+            w.toolbarStyle = .unified
+            w.setContentSize(NSSize(width: 820, height: 640))
             w.isReleasedWhenClosed = false
             settingsWindow = w
             // On the Mac's own screen: the glasses may only show a captured image of their desktop.

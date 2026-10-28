@@ -67,190 +67,386 @@ final class SettingsModel: ObservableObject {
     func run(_ action: @escaping () -> Void) -> () -> Void { { action(); self.changed() } }
 }
 
-struct SettingsView: View {
-    @ObservedObject var model: SettingsModel
+/// A settings row in the Magnet / System Settings style: title, an explanation under it, the
+/// control on the right.
+struct Row<Control: View>: View {
+    let title: String
+    var detail: String?
+    @ViewBuilder var control: () -> Control
 
     var body: some View {
-        TabView {
-            general.tabItem { Label("General", systemImage: "gearshape") }
-            text.tabItem { Label("Text & Screen", systemImage: "textformat.size") }
-            tracking.tabItem { Label("Tracking", systemImage: "move.3d") }
-            accuracy.tabItem { Label("Accuracy", systemImage: "scope") }
-            performance.tabItem { Label("Performance", systemImage: "speedometer") }
+        LabeledContent {
+            control()
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                if let detail { Text(detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }
         }
-        .frame(width: 600, height: 560)
+        .padding(.vertical, 3)
+    }
+}
+
+/// A toggle row with an explanation.
+struct ToggleRow: View {
+    let title: String
+    var detail: String?
+    let isOn: Binding<Bool>
+
+    var body: some View {
+        Row(title: title, detail: detail) { Toggle("", isOn: isOn).labelsHidden().toggleStyle(.switch) }
+    }
+}
+
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case general, display, text, tracking, anchoring, accuracy, performance, about
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .display: return "Display"
+        case .text: return "Text Clarity"
+        case .tracking: return "Head Tracking"
+        case .anchoring: return "Anchoring"
+        case .accuracy: return "Accuracy"
+        case .performance: return "Performance"
+        case .about: return "About"
+        }
+    }
+
+    var icon: (name: String, color: Color) {
+        switch self {
+        case .general: return ("gearshape.fill", .gray)
+        case .display: return ("display", .blue)
+        case .text: return ("textformat.size", .indigo)
+        case .tracking: return ("move.3d", .green)
+        case .anchoring: return ("pin.fill", .orange)
+        case .accuracy: return ("scope", .red)
+        case .performance: return ("speedometer", .teal)
+        case .about: return ("info.circle.fill", .secondary)
+        }
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var model: SettingsModel
+    @State private var page: SettingsPage? = .general
+
+    var body: some View {
+        NavigationSplitView {
+            List(SettingsPage.allCases, selection: $page) { p in
+                Label {
+                    Text(p.title)
+                } icon: {
+                    Image(systemName: p.icon.name)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                        .background(p.icon.color.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                .padding(.vertical, 3)
+                .tag(p)
+            }
+            .navigationSplitViewColumnWidth(200)
+        } detail: {
+            Group {
+                switch page ?? .general {
+                case .general: general
+                case .display: display
+                case .text: text
+                case .tracking: tracking
+                case .anchoring: anchoring
+                case .accuracy: accuracy
+                case .performance: performance
+                case .about: about
+                }
+            }
+            .formStyle(.grouped)
+            .navigationTitle((page ?? .general).title)
+        }
+        .frame(minWidth: 780, minHeight: 600)
     }
 
     private var m: SettingsModel { model }
 
-    // MARK: Tabs
+    // MARK: Pages
 
     private var general: some View {
         Form {
-            Section {
-                Picker("Setup", selection: m.setup) {
-                    Text("Glasses Screen — one display").tag("glasses")
-                    Text("Glasses Screen Ultrawide 32:9 — 3D mode, 60 Hz").tag("ultrawide")
-                    Text("Virtual Display — any resolution, 120 Hz").tag("virtual")
-                    Text("Mirroring (pick it in the menu bar › Source)").tag("mirror")
+            Section("Status") {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    let s = m.app.imu.snapshot()
+                    VStack(alignment: .leading, spacing: 6) {
+                        status(s.connected ? "Glasses connected" : "Glasses not connected", s.connected ? .green : .red)
+                        status(s.ready ? "Tracking ready" : "Tracking calibrating…", s.ready ? .green : .orange)
+                        status(m.app.settings.tracking == .glasses ? "AirPods not used"
+                               : m.app.renderer?.isUsingAirPods == true ? "AirPods correcting drift"
+                               : m.app.headphones.latest() != nil ? "AirPods calibrating" : "AirPods: no data",
+                               m.app.renderer?.isUsingAirPods == true ? .green : .secondary)
+                    }
+                    .padding(.vertical, 4)
                 }
-                Picker("Resolution", selection: m.resolution) {
-                    ForEach(VirtualMonitor.Resolution.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            Section("Quick actions") {
+                Row(title: "Recenter the screen", detail: "Or press ⌃⌥R, or double-tap the glasses.") {
+                    Button("Recenter", action: m.run { m.app.recenter() })
                 }
-                Toggle("Glasses at 120 Hz", isOn: m.refresh)
-            } header: {
-                Text("Display")
-            } footer: {
-                Text("Resolutions apply to the Virtual Display; picking one switches to it. Crisp Retina gives the cleanest text.")
-                    .font(.caption).foregroundStyle(.secondary)
+                Row(title: "Preset", detail: "Desk keeps the screen fixed. Sofa and Lying Down let it follow you.") {
+                    HStack {
+                        Button("Desk", action: m.run { m.app.applyPreset("desk") })
+                        Button("Sofa", action: m.run { m.app.applyPreset("sofa") })
+                        Button("Lying Down", action: m.run { m.app.applyPreset("lying") })
+                    }
+                }
             }
             Section("App") {
-                Toggle("Open at Login", isOn: m.login)
-                Toggle("Developer Mode (live data in the glasses)  ⌃⌥D", isOn: m.developer)
-                Toggle("Also show developer data on the Mac", isOn: m.developerOnMac)
+                ToggleRow(title: "Open at login", isOn: m.login)
+                ToggleRow(title: "Developer mode", detail: "Live sensor and pipeline data in the glasses. ⌃⌥D", isOn: m.developer)
+                ToggleRow(title: "Also show developer data on the Mac", detail: "In a window you can screenshot.", isOn: m.developerOnMac)
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func status(_ text: String, _ color: Color) -> some View {
+        HStack(spacing: 8) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(text)
+        }
+    }
+
+    private var display: some View {
+        Form {
+            Section("Setup") {
+                Row(title: "Setup", detail: "Glasses Screen adds no display. Virtual Display allows any resolution and side screens.") {
+                    Picker("", selection: m.setup) {
+                        Text("Glasses Screen").tag("glasses")
+                        Text("Glasses Ultrawide 32:9").tag("ultrawide")
+                        Text("Virtual Display").tag("virtual")
+                        Text("Mirroring").tag("mirror")
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                Row(title: "Resolution", detail: "Virtual Display only; picking one switches to it. Crisp Retina gives the cleanest text.") {
+                    Picker("", selection: m.resolution) {
+                        ForEach(VirtualMonitor.Resolution.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden().frame(maxWidth: 260)
+                }
+                Row(title: "Side screens", detail: "Extra displays left and right of the pinned one (Virtual Display).") {
+                    Picker("", selection: m.choice("sideScreens")) {
+                        Text("Off").tag("off"); Text("Left").tag("left"); Text("Right").tag("right"); Text("Both").tag("both")
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                ToggleRow(title: "Glasses at 120 Hz", detail: "Smoother motion. Ultrawide always runs at 60 Hz.", isOn: m.refresh)
+            }
+            Section("Screen") {
+                Row(title: "Zoom", detail: "⌃⌥I / ⌃⌥O. Around 120% in Glasses Screen, text is pixel-exact.") {
+                    HStack {
+                        Slider(value: m.zoom, in: 0.6...2.4).frame(width: 200)
+                        Text("\(Int((m.app.settings.zoom * 100).rounded()))%").monospacedDigit().frame(width: 44, alignment: .trailing)
+                    }
+                }
+                Row(title: "Height", detail: "Raise or lower the screen. ⌃⌥↑ / ⌃⌥↓") {
+                    HStack {
+                        Slider(value: m.value(\.screenPitch), in: -30...30, step: 1).frame(width: 200)
+                        Text("\(Int(m.app.settings.screenPitch))°").monospacedDigit().frame(width: 44, alignment: .trailing)
+                    }
+                }
+                Row(title: "Field of view", detail: "If the screen slides when you turn, adjust this. ⌃⌥L / ⌃⌥K") {
+                    Stepper("\(Int(m.app.settings.fovDiagonal))°", value: m.value(\.fovDiagonal), in: 25...70, step: 1).fixedSize()
+                }
+                ToggleRow(title: "Curve ultrawide screens", detail: "21:9 and wider wrap around you, so the edges stay sharp.", isOn: m.flag("curved"))
+            }
+            Section("Eye comfort") {
+                Row(title: "Warmth", detail: "Less blue light, for the evening.") {
+                    Picker("", selection: m.choice("warmth")) {
+                        Text("Off").tag("0"); Text("Low").tag("0.3"); Text("Medium").tag("0.6"); Text("High").tag("1")
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                Row(title: "Brightness") {
+                    Picker("", selection: m.choice("brightness")) {
+                        ForEach(["1", "0.85", "0.7", "0.5", "0.35"], id: \.self) { Text("\(Int((Double($0) ?? 1) * 100))%").tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
+                }
+            }
+        }
     }
 
     private var text: some View {
         Form {
             Section {
-                Picker("Sharpness", selection: m.value(\.sharpness)) {
-                    Text("Off").tag(0.0); Text("Low").tag(0.3); Text("Medium").tag(0.5); Text("High").tag(0.8)
+                Row(title: "Sharpness", detail: "Restores edge contrast lost when the desktop is resized.") {
+                    Picker("", selection: m.value(\.sharpness)) {
+                        Text("Off").tag(0.0); Text("Low").tag(0.3); Text("Medium").tag(0.5); Text("High").tag(0.8)
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                Picker("Sharpening style", selection: m.choice("sharpenStyle2")) {
-                    ForEach(SharpenStyle.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                Row(title: "Sharpening style", detail: "Unsharp Mask scored best in the render lab.") {
+                    Picker("", selection: m.choice("sharpenStyle2")) {
+                        ForEach(SharpenStyle.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                Toggle("Resize text like macOS (no glow or halo)", isOn: m.flag("gammaResample"))
-                Toggle("Sharper sampling (bicubic)", isOn: m.flag("smartFilter"))
-                Toggle("Sharpen only when still (no crawling text while turning)", isOn: m.flag("motionSharpen"))
-                Toggle("Pixel lock when still (exact pixels near 100% zoom)", isOn: m.flag("pixelLock"))
+                ToggleRow(title: "Resize text like macOS", detail: "Removes the glow around light text and the thinning of dark text.", isOn: m.flag("gammaResample"))
+                ToggleRow(title: "Sharper sampling", detail: "Bicubic instead of bilinear: crisp strokes even while the screen moves.", isOn: m.flag("smartFilter"))
+                ToggleRow(title: "Sharpen only when still", detail: "No crawling text while you turn your head.", isOn: m.flag("motionSharpen"))
+                ToggleRow(title: "Pixel lock when still", detail: "Near 100% scale, the screen settles onto exact pixels, like a real monitor.", isOn: m.flag("pixelLock"))
             } header: {
                 Text("Text clarity")
             } footer: {
-                Text("Defaults are the best scores from the render lab (see TESTING.md).").font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Screen") {
-                LabeledContent("Zoom") {
-                    HStack {
-                        Slider(value: m.zoom, in: 0.6...2.4)
-                        Text("\(Int((m.app.settings.zoom * 100).rounded()))%").monospacedDigit().frame(width: 44, alignment: .trailing)
-                    }
-                }
-                LabeledContent("Height") {
-                    HStack {
-                        Slider(value: m.value(\.screenPitch), in: -30...30, step: 1)
-                        Text("\(Int(m.app.settings.screenPitch))°").monospacedDigit().frame(width: 44, alignment: .trailing)
-                    }
-                }
-                Stepper("Field of view: \(Int(m.app.settings.fovDiagonal))° (if the screen swims when turning)",
-                        value: m.value(\.fovDiagonal), in: 25...70, step: 1)
-                Toggle("Curve ultrawide screens", isOn: m.flag("curved"))
-                Picker("Side screens (Virtual Display)", selection: m.choice("sideScreens")) {
-                    Text("Off").tag("off"); Text("Left").tag("left"); Text("Right").tag("right"); Text("Both").tag("both")
-                }
-            }
-            Section("Eye comfort") {
-                Picker("Warmth", selection: m.choice("warmth")) {
-                    Text("Off").tag("0"); Text("Low").tag("0.3"); Text("Medium").tag("0.6"); Text("High").tag("1")
-                }
-                Picker("Brightness", selection: m.choice("brightness")) {
-                    ForEach(["1", "0.85", "0.7", "0.5", "0.35"], id: \.self) { Text("\(Int((Double($0) ?? 1) * 100))%").tag($0) }
-                }
+                Text("The defaults are the best of 108 combinations scored against native text by the render lab.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
         }
-        .formStyle(.grouped)
     }
 
     private var tracking: some View {
         Form {
-            Section("Head tracking") {
-                Picker("Source", selection: m.tracking) {
-                    ForEach(TrackingMode.allCases, id: \.self) { Text($0.title).tag($0) }
+            Section("Source") {
+                Row(title: "Head tracking", detail: "The AirPods' heading cancels the glasses' slow sideways drift.") {
+                    Picker("", selection: m.tracking) {
+                        ForEach(TrackingMode.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                HStack {
-                    Button("Recalibrate AirPods", action: m.run { m.app.recalibrateAirPods() })
-                    Button("Calibrate Gyro (glasses on a table)…", action: m.run { m.app.calibrate() })
+                Row(title: "AirPods", detail: "Learns how your AirPods sit in your ears. Turn and nod for a few seconds.") {
+                    Button("Recalibrate", action: m.run { m.app.recalibrateAirPods() })
                 }
-                Toggle("Steady image (ignore heartbeat and micro-movements)", isOn: m.value(\.steady))
-            }
-            Section("Presets") {
-                HStack {
-                    Button("Desk  ⌃⌥1", action: m.run { m.app.applyPreset("desk") })
-                    Button("Sofa  ⌃⌥2", action: m.run { m.app.applyPreset("sofa") })
-                    Button("Lying Down  ⌃⌥3", action: m.run { m.app.applyPreset("lying") })
+                Row(title: "Gyro", detail: "Put the glasses on a table for 3 s. Fixes most drift.") {
+                    Button("Calibrate…", action: m.run { m.app.calibrate() })
                 }
+                ToggleRow(title: "Steady image", detail: "Ignores heartbeat and micro-movements under 0.1°.", isOn: m.value(\.steady))
             }
             Section("Follow your head on these axes") {
-                Toggle("Yaw (left/right)  ⌃⌥Y", isOn: m.value(\.lockYaw) { _ in m.app.renderer?.recenter() })
-                Toggle("Pitch (up/down)  ⌃⌥P", isOn: m.value(\.lockPitch) { _ in m.app.renderer?.recenter() })
-                Toggle("Roll (tilt)  ⌃⌥E", isOn: m.value(\.lockRoll))
+                ToggleRow(title: "Yaw — left/right", detail: "⌃⌥Y", isOn: m.value(\.lockYaw) { _ in m.app.renderer?.recenter() })
+                ToggleRow(title: "Pitch — up/down", detail: "⌃⌥P", isOn: m.value(\.lockPitch) { _ in m.app.renderer?.recenter() })
+                ToggleRow(title: "Roll — tilt", detail: "⌃⌥E", isOn: m.value(\.lockRoll))
             }
-            Section("Anchoring") {
-                Toggle("Smooth Follow: the screen glides back in front of you  ⌃⌥F", isOn: m.flag("follow"))
-                Picker("Follow dead zone", selection: m.choice("followDeadzone")) {
-                    ForEach(["10", "20", "30", "45"], id: \.self) { Text("\($0)°").tag($0) }
+        }
+    }
+
+    private var anchoring: some View {
+        Form {
+            Section("Following") {
+                ToggleRow(title: "Smooth follow", detail: "The screen stays put until you look past the dead zone, then glides back in front of you. ⌃⌥F", isOn: m.flag("follow"))
+                Row(title: "Dead zone") {
+                    Picker("", selection: m.choice("followDeadzone")) {
+                        ForEach(["10", "20", "30", "45"], id: \.self) { Text("\($0)°").tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                Toggle("Recenter after looking away for a while", isOn: m.flag("lookAwayRecenter"))
-                Toggle("Double-tap the glasses to recenter", isOn: m.flag("doubleTap"))
-                Toggle("Auto drift correction (follows your average gaze)", isOn: m.value(\.autoRecenter))
-                Picker("Neck saver (turn less, see more)", selection: m.choice("yawGain")) {
-                    Text("Off").tag("1"); Text("1.25×").tag("1.25"); Text("1.5×").tag("1.5"); Text("2×").tag("2")
+                ToggleRow(title: "Recenter after looking away", detail: "Look elsewhere for 10 s and hold still: the screen moves there.", isOn: m.flag("lookAwayRecenter"))
+            }
+            Section("Recentering") {
+                ToggleRow(title: "Double-tap the glasses to recenter", isOn: m.flag("doubleTap"))
+                ToggleRow(title: "Auto drift correction", detail: "Slowly turns the screen toward where you look on average.", isOn: m.value(\.autoRecenter))
+            }
+            Section("Comfort") {
+                Row(title: "Neck saver", detail: "Turn less, see more: 1.5× means turning 30° shows 45°.") {
+                    Picker("", selection: m.choice("yawGain")) {
+                        Text("Off").tag("1"); Text("1.25×").tag("1.25"); Text("1.5×").tag("1.5"); Text("2×").tag("2")
+                    }
+                    .labelsHidden().fixedSize()
                 }
             }
         }
-        .formStyle(.grouped)
     }
 
     private var accuracy: some View {
         Form {
             Section("Sensor fusion") {
-                Picker("Filter", selection: m.choice("fusion")) {
-                    Text("Complementary").tag(Fusion.Mode.complementary.rawValue)
-                    Text("Kalman with bias state (experimental)").tag(Fusion.Mode.kalman.rawValue)
+                Row(title: "Filter", detail: "Kalman learns gyro bias while you move. Try it and compare drift.") {
+                    Picker("", selection: m.choice("fusion")) {
+                        Text("Complementary").tag(Fusion.Mode.complementary.rawValue)
+                        Text("Kalman").tag(Fusion.Mode.kalman.rawValue)
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                Toggle("Ignore gravity while accelerating", isOn: m.flag("strictAccel"))
-                Toggle("Temperature compensation (learns bias vs. °C)", isOn: m.flag("temperatureComp"))
-                Toggle("Learn the glasses' gyro bias from the AirPods", isOn: m.flag("airPodsBias"))
-                Toggle("Learn the glasses' gyro sensitivity from the AirPods", isOn: m.flag("airPodsScale"))
+                ToggleRow(title: "Ignore gravity while accelerating", detail: "Keeps the horizon level when walking or nodding fast.", isOn: m.flag("strictAccel"))
+                ToggleRow(title: "Temperature compensation", detail: "Learns how the gyro drifts as the glasses warm up.", isOn: m.flag("temperatureComp"))
+                ToggleRow(title: "Learn gyro bias from the AirPods", detail: "Uses the AirPods' calibrated gyro as a reference while you move.", isOn: m.flag("airPodsBias"))
+                ToggleRow(title: "Learn gyro sensitivity from the AirPods", detail: "Fixes swimming when turning. Slow and capped.", isOn: m.flag("airPodsScale"))
             }
             Section("Calibration") {
-                Button(m.app.yawScaleStart == nil ? "Calibrate turn sensitivity (turn a full circle)…  ⌃⌥G"
-                       : "Finish turn calibration (facing the start again)  ⌃⌥G", action: m.run { m.app.calibrateYawScale() })
-                HStack {
-                    Button("Reset gyro sensitivity", action: m.run { m.app.resetScale() })
-                    Button("Forget temperature model", action: m.run { m.app.resetTemperature() })
+                Row(title: "Turn sensitivity", detail: "Face something, start, turn around once, face it again, finish. ⌃⌥G") {
+                    Button(m.app.yawScaleStart == nil ? "Start…" : "Finish", action: m.run { m.app.calibrateYawScale() })
+                }
+                Row(title: "Reset learned corrections") {
+                    HStack {
+                        Button("Sensitivity", action: m.run { m.app.resetScale() })
+                        Button("Temperature", action: m.run { m.app.resetTemperature() })
+                    }
                 }
             }
-            Section("Experimental drift references") {
-                Toggle("Mac camera (sees which way your face points)", isOn: m.flag("cameraDrift"))
-                Toggle("Typing hint (you look at the caret while typing)", isOn: m.flag("typingDrift"))
-                Button("Probe glasses calibration (read-only, shows in Developer Mode)", action: m.run { m.app.probeCalibration() })
+            Section("Experimental") {
+                ToggleRow(title: "Mac camera as drift reference", detail: "Sees which way your face points. Never drifts while you face the Mac.", isOn: m.flag("cameraDrift"))
+                ToggleRow(title: "Typing hint", detail: "While typing, the screen very slowly turns so the caret is where your head points.", isOn: m.flag("typingDrift"))
+                Row(title: "Probe glasses calibration", detail: "Read-only query; the reply shows in developer mode.") {
+                    Button("Probe", action: m.run { m.app.probeCalibration() })
+                }
             }
         }
-        .formStyle(.grouped)
     }
 
     private var performance: some View {
         Form {
             Section("Motion") {
-                Picker("Smoothing", selection: m.choice("smoothing")) {
-                    ForEach(SmoothingMode.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                Row(title: "Smoothing", detail: "1€ adapts to speed: steady when still, no lag when turning.") {
+                    Picker("", selection: m.choice("smoothing")) {
+                        Text("1€ Filter").tag(SmoothingMode.oneEuro.rawValue); Text("Classic").tag(SmoothingMode.classic.rawValue)
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                Toggle("Predict from the filtered pose (less jitter)", isOn: m.flag("predictFiltered"))
-                Picker("Frame pacing", selection: m.choice("pacing")) {
-                    ForEach(FramePacing.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
+                ToggleRow(title: "Predict from the filtered pose", detail: "Less jitter than extrapolating raw gyro noise.", isOn: m.flag("predictFiltered"))
+                Row(title: "Frame pacing", detail: "Metal Display Link predicts to when the frame really reaches the panel.") {
+                    Picker("", selection: m.choice("pacing")) {
+                        Text("Metal Display Link").tag(FramePacing.metalLink.rawValue); Text("Classic").tag(FramePacing.classic.rawValue)
+                    }
+                    .labelsHidden().fixedSize()
                 }
-                Picker("Prediction trim", selection: m.choice("predictionTrim")) {
-                    ForEach(["-8", "-4", "0", "4", "8", "12"], id: \.self) { Text($0 == "0" ? "0 ms (default)" : "\($0.hasPrefix("-") ? "" : "+")\($0) ms").tag($0) }
+                Row(title: "Prediction trim", detail: "Screen lags when you turn: add. Overshoots when you stop: subtract.") {
+                    Picker("", selection: m.choice("predictionTrim")) {
+                        ForEach(["-8", "-4", "0", "4", "8", "12"], id: \.self) { Text($0 == "0" ? "0 ms" : "\($0.hasPrefix("-") ? "" : "+")\($0) ms").tag($0) }
+                    }
+                    .labelsHidden().fixedSize()
                 }
             }
             Section("CPU and GPU") {
-                Toggle("Skip frames when nothing changes", isOn: m.flag("skipIdle"))
-                Toggle("Metal performance HUD in the glasses", isOn: m.flag("metalHUD"))
+                ToggleRow(title: "Skip frames when nothing changes", detail: "Saves power while you and the screen are still.", isOn: m.flag("skipIdle"))
+                ToggleRow(title: "Metal performance HUD", detail: "Apple's frame rate and GPU time overlay, in the glasses.", isOn: m.flag("metalHUD"))
             }
         }
-        .formStyle(.grouped)
     }
+
+    private var about: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("RayNeoPin").font(.title2.bold())
+                    Text("Head-tracked screen pinning for RayNeo glasses on macOS.").foregroundStyle(.secondary)
+                    Text("Version \(SettingsView.revision)").font(.callout.monospaced()).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 6)
+            }
+            Section {
+                Row(title: "Updates", detail: "Rebuilds from the latest source on your branch.") {
+                    Button("Check for Updates…", action: m.run { m.app.update() })
+                }
+                Row(title: "Source code") {
+                    Link("GitHub", destination: URL(string: "https://github.com/Fuut4/rayneo-pin")!)
+                }
+                Row(title: "Support", detail: "Help pay Claude's bill.") {
+                    Link("☕ Buy Me a Coffee", destination: AppDelegate.coffeeURL)
+                }
+            }
+        }
+    }
+
+    static let revision: String = Bundle.main.url(forResource: "revision", withExtension: nil)
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "dev"
 }
