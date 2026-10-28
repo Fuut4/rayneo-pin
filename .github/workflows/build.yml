@@ -2,6 +2,8 @@ name: Build
 on:
   push:
   pull_request:
+permissions:
+  contents: write # the render lab publishes its results to the lab-results branch
 jobs:
   build:
     runs-on: macos-15
@@ -30,9 +32,15 @@ jobs:
           while read -r line; do echo "::notice title=logic tests::$line"; done < results.txt
       - name: Render lab (text clarity of every option)
         run: |
-          ./RayNeoPin --render-lab lab | tee lab.txt
-          { echo "::notice title=render lab::$(sed ':a;N;$!ba;s/%/%25/g;s/\n/%0A/g' lab.txt)"; }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: render-lab
-          path: lab
+          ./RayNeoPin --render-lab lab | tee lab/results.txt
+      - name: Publish lab results to the lab-results branch
+        if: github.event_name == 'push'
+        run: |
+          cd lab
+          git init -q -b lab-results
+          git config user.name "render lab"
+          git config user.email "actions@users.noreply.github.com"
+          echo "Render lab results for ${GITHUB_SHA} (${GITHUB_REF_NAME})" > README.md
+          git add -A
+          git commit -qm "Render lab results for ${GITHUB_SHA}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" lab-results
