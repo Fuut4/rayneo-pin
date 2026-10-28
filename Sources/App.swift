@@ -1363,7 +1363,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateDetail?.stringValue = detail
         updateBar?.maxValue = Double(total)
         // Each step fills its share over its usual duration, so the bar keeps moving during the build.
-        let expected = [0: 4.0, 1: 5, 2: 60, 3: 3, 4: 2][step] ?? 5
+        let durations: [Int: Double] = [0: 4, 1: 5, 2: 60, 3: 3, 4: 2]
+        let expected = durations[step] ?? 5
         let within = min(Date().timeIntervalSince(updateStepStart) / expected, 0.95)
         updateBar?.doubleValue = finished ? Double(total) : failed ? 0 : Double(max(step - 1, 0)) + (step == 0 ? 0.1 : within)
         if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main, !panel.isVisible {
