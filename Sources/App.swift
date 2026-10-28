@@ -61,7 +61,7 @@ final class Settings {
         "follow": false, "lookAwayRecenter": false, "doubleTap": true,
         "strictAccel": true, "temperatureComp": true, "airPodsBias": true, "airPodsScale": false,
         "cameraDrift": false, "typingDrift": false,
-        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true,
+        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true, "telemetry": true,
     ]
 
     func flag(_ key: String) -> Bool { bool(key, Settings.flagDefaults[key] ?? false) }
@@ -133,6 +133,7 @@ final class Settings {
         p.cameraDrift = flag("cameraDrift")
         p.typingDrift = flag("typingDrift")
         p.metalHUD = flag("metalHUD")
+        p.telemetry = flag("telemetry")
     }
 }
 
@@ -215,6 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async {
                 guard let self, self.settings.flag("doubleTap"), self.calibrationTimer == nil else { return }
                 NSSound(named: "Pop")?.play()
+                Telemetry.shared.event("double tap", time: CACurrentMediaTime())
                 self.renderer?.recenter()
                 self.renderer?.show("Recentered (double tap)", seconds: 1)
             }
@@ -769,6 +771,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Pushes every setting to the renderer, the sensor fusion and the optional references.
     func applyExtras() {
         renderer?.update { settings.apply(to: &$0) }
+        if settings.flag("telemetry") { Telemetry.shared.start() } else { Telemetry.shared.stop() }
         imu.configure(mode: settings.fusionMode, strictAccel: settings.flag("strictAccel"), temperature: settings.flag("temperatureComp"))
         if settings.flag("cameraDrift") {
             if face == nil {
@@ -1025,6 +1028,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// looking into the glasses.
     @objc func calibrate() {
         guard calibrationTimer == nil else { return }
+        Telemetry.shared.event("table calibration started", time: CACurrentMediaTime())
         imu.send(.proximitySensor, value: 0)
         imu.calibrateOnTable()
         NSSound(named: "Tink")?.play()
@@ -1048,6 +1052,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func finishCalibration(_ message: String, ok: Bool) {
+        Telemetry.shared.event("table calibration: " + message, time: CACurrentMediaTime())
         calibrationTimer?.invalidate()
         calibrationTimer = nil
         imu.send(.proximitySensor, value: 1)
@@ -1126,6 +1131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func recalibrateAirPods() {
+        Telemetry.shared.event("airpods recalibration requested", time: CACurrentMediaTime())
         renderer?.recalibrateAirPods()
         renderer?.show("Recalibrating AirPods — turn your head left/right and nod a few times", seconds: 4)
     }

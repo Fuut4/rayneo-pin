@@ -224,6 +224,13 @@ struct SettingsView: View {
                 ToggleRow(title: "Open at login", isOn: m.login)
                 ToggleRow(title: "Developer mode", detail: "Live sensor and pipeline data in the glasses. ⌃⌥D", isOn: m.developer)
                 ToggleRow(title: "Also show developer data on the Mac", detail: "In a window you can screenshot.", isOn: m.developerOnMac)
+                ToggleRow(title: "Record telemetry", detail: "Sensors, AirPods, delays and decisions, 20× a second, to a file you can send for analysis. About 30 MB per hour; the last 15 sessions are kept.", isOn: m.flag("telemetry"))
+                Row(title: "Telemetry files", detail: "~/Library/Logs/RayNeoPin") {
+                    Button("Show in Finder") {
+                        try? FileManager.default.createDirectory(at: Telemetry.folder, withIntermediateDirectories: true)
+                        NSWorkspace.shared.activateFileViewerSelecting([Telemetry.shared.file ?? Telemetry.folder])
+                    }
+                }
             }
         }
     }

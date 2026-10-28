@@ -138,6 +138,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var cameraDrift = false // the Mac's camera sees which way your face points
         var typingDrift = false // while typing you look at the caret
         var metalHUD = false
+        var telemetry = true // record sensors and decisions to ~/Library/Logs/RayNeoPin
     }
 
     /// Fraction of the view width the screen covers at zoom 1.
@@ -800,6 +801,17 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         if p.tracking != .glasses {
             let fresh = headphones.drain()
             calibration.ingest(fresh, glasses: imu.pose(at:))
+            if p.telemetry {
+                for f in fresh {
+                    guard let g = imu.pose(at: calibration.glassesTime(f)) else { continue }
+                    // In the glasses' frame once calibrated; before that only the speeds compare.
+                    let a = calibration.X == nil ? f.rate : calibration.rate(f)
+                    let mismatch = calibration.X == nil ? abs(simd_length(f.rate) - simd_length(g.omega)) : simd_length(a - g.omega)
+                    Telemetry.shared.sample([f3(frameStart), f3(f.time), f3(f.arrival), deg3(a.x), deg3(a.y), deg3(a.z),
+                                             deg3(g.omega.x), deg3(g.omega.y), deg3(g.omega.z),
+                                             deg3(simd_length(f.rate)), deg3(simd_length(g.omega)), deg3(mismatch)])
+                }
+            }
             airpods = headphones.latest()
             // Both devices sit on the same head, so they must rotate alike. AirPods turning while the
             // glasses don't (being adjusted in the ear, reconnecting, a bud swap) is not head motion:
@@ -906,6 +918,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             // While a fast turn stops, the smoothed rate lags behind and would keep "turning" past the
             // stop (the screen overshoots, then snaps back): predict with whichever rate is slower.
             let predictRate = simd_length(omega) < simd_length(omegaLP) ? omega : omegaLP
+            if recenterNow, p.telemetry { Telemetry.shared.event("recenter", time: frameStart) }
             if recenterNow || !hasPose {
                 let yp = pose.yawPitch
                 anchor = .yawPitch(yp.yaw, p.lockPitch ? 0 : yp.pitch)
@@ -1013,6 +1026,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         f.needsDraw = !p.skipIdle || signature != lastSignature
         if f.needsDraw { lastSignature = signature }
 
+        if p.telemetry { recordTelemetry(s, airpods: airpods, pose: pose, omega: omega, usingAirPods: usingAirPods, p: p, f: f, now: frameStart) }
         devFrames += 1
         if f.needsDraw { devDrawn += 1 }
         if p.developer { developerOverlay(s, airpods: airpods, pose: pose, usingAirPods: usingAirPods, p: p,
@@ -1022,6 +1036,65 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     }
 
     private var lastLockMatrix = matrix_identity_float4x4
+
+    // MARK: Telemetry
+
+    private var lastTelemetry = 0.0
+    private var tFrames = 0, tDrawn = 0, tWindow = 0.0, tFPS = 0.0, tDrawnFPS = 0.0
+    private var tLast = (ready: false, reseats: 0, restarts: 0, ignored: false, tracking: TrackingMode.both, connected: false, asleep: false)
+
+    private func recordTelemetry(_ s: IMU.Snapshot, airpods: Headphones.Sample?, pose: simd_quatd?, omega: SIMD3<Double>,
+                                 usingAirPods: Bool, p: Params, f: Frame, now: Double) {
+        tFrames += 1
+        if f.needsDraw { tDrawn += 1 }
+        if tWindow == 0 { tWindow = now }
+        if now - tWindow >= 1 {
+            tFPS = Double(tFrames) / (now - tWindow)
+            tDrawnFPS = Double(tDrawn) / (now - tWindow)
+            tFrames = 0; tDrawn = 0; tWindow = now
+        }
+        let ignored = now < airPodsDisturbedUntil
+        // Events: whatever changed since the last frame.
+        let t = Telemetry.shared
+        if s.connected != tLast.connected { t.event(s.connected ? "glasses connected" : "glasses disconnected", time: now) }
+        let raw = imu.rawSnapshot()
+        if raw.asleep != tLast.asleep { t.event(raw.asleep ? "glasses asleep (not worn)" : "glasses awake", time: now) }
+        if p.tracking != tLast.tracking { t.event("tracking: \(p.tracking.rawValue)", time: now) }
+        if calibration.ready != tLast.ready {
+            t.event(calibration.ready ? String(format: "airpods calibrated (lag %.0f ms, fit %.1f%%)", calibration.lag * 1000, calibration.fitError * 100)
+                    : "airpods calibration lost", time: now)
+        }
+        if calibration.reseats != tLast.reseats { t.event("airpods reseated in the ears: relearning", time: now) }
+        if calibration.restarts != tLast.restarts { t.event("airpods calibration: poor fit, dropped older movement", time: now) }
+        if ignored != tLast.ignored { t.event(ignored ? "airpods ignored (disagree with the glasses)" : "airpods trusted again", time: now) }
+        tLast = (calibration.ready, calibration.reseats, calibration.restarts, ignored, p.tracking, s.connected, raw.asleep)
+
+        guard now - lastTelemetry >= 0.05 else { return }
+        lastTelemetry = now
+        let state: String
+        switch s.state {
+        case .ready: state = "ready"
+        case .calibrating(let x): state = "calibrating:" + f3(x)
+        case .calibratingOnTable(let x): state = "table:" + f3(x)
+        }
+        let fused = s.q.ypr, a = airpods?.angles ?? SIMD3(repeating: .nan)
+        let poseYPR = pose?.ypr ?? SIMD3(repeating: .nan), anc = anchor.ypr, head = f.head.ypr
+        func b(_ x: Bool) -> String { x ? "1" : "0" }
+        t.state([
+            f3(now),
+            b(s.connected), state, f3(raw.rate), b(raw.asleep), f3(raw.temperature), f3(raw.stillTime), b(raw.accelRejected),
+            deg3(raw.gyro.x), deg3(raw.gyro.y), deg3(raw.gyro.z), f3(raw.acc.x), f3(raw.acc.y), f3(raw.acc.z),
+            deg3(raw.bias.x), deg3(raw.bias.y), deg3(raw.bias.z),
+            deg3(fused.x), deg3(fused.y), deg3(fused.z),
+            p.tracking.rawValue, b(airpods != nil), f3(headphones.stats.rate), f3(devAirPodsDelay * 1000), deg3(a.x), deg3(a.y), deg3(a.z),
+            b(calibration.ready), f3(calibration.progress), f3(calibration.turned), f3(calibration.nodded), f3(calibration.lag * 1000),
+            f3(calibration.fitError), String(calibration.glitches), String(calibration.restarts), String(calibration.reseats),
+            b(usingAirPods), b(ignored), deg3(heading.correction), devYawGap.map(deg3) ?? "",
+            deg3(devBiasApplied.x), deg3(devBiasApplied.y), deg3(devBiasApplied.z),
+            deg3(poseYPR.x), deg3(poseYPR.y), deg3(poseYPR.z), deg3(anc.x), deg3(anc.y), deg3(head.x), deg3(head.y), deg3(head.z),
+            deg3(simd_length(omega)), f3(prediction * 1000), f3(f.zoom), f3(f.lockBlend), f3(tFPS), f3(tDrawnFPS), b(following),
+        ])
+    }
 
     // MARK: Drift references
 
