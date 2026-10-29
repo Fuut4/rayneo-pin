@@ -61,7 +61,9 @@ final class Settings {
         "follow": false, "lookAwayRecenter": false, "doubleTap": true,
         "strictAccel": true, "temperatureComp": true, "airPodsBias": true, "airPodsScale": false,
         "cameraDrift": false, "typingDrift": false,
-        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true, "telemetry": true,
+        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true,
+        // Off until the person chooses otherwise (Privacy.swift).
+        "telemetry": false, "uploadTelemetry": false,
     ]
 
     func flag(_ key: String) -> Bool { bool(key, Settings.flagDefaults[key] ?? false) }
@@ -210,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         termSource?.setEventHandler { AppDelegate.quit() }
         termSource?.resume()
 
+        askTelemetryConsentIfNeeded()
         imu.scale = settings.gyroScale
         if let model = settings.temperatureModel { imu.temperatureModel = model }
         imu.onDoubleTap = { [weak self] in
@@ -776,6 +779,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Pushes every setting to the renderer, the sensor fusion and the optional references.
     func applyExtras() {
         renderer?.update { settings.apply(to: &$0) }
+        // Uploading is chosen when a session starts; switching it restarts the session.
+        let upload = settings.flag("uploadTelemetry")
+        if Telemetry.shared.upload != upload { Telemetry.shared.upload = upload; Telemetry.shared.stop() }
         if settings.flag("telemetry") { Telemetry.shared.start(info: sessionInfo()) } else { Telemetry.shared.stop() }
         imu.configure(mode: settings.fusionMode, strictAccel: settings.flag("strictAccel"), temperature: settings.flag("temperatureComp"))
         if settings.flag("cameraDrift") {
@@ -795,7 +801,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Everything about the setup a telemetry session was recorded with.
+    /// The setup a telemetry session was recorded with. Nothing identifying: no display names,
+    /// no AirPods name or Bluetooth address.
     func sessionInfo() -> [String: Any] {
         var info: [String: Any] = [
             "app": "RayNeoPin", "revision": SettingsView.revision,
@@ -807,10 +814,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "displays": NSScreen.screens.map { s -> [String: Any] in
                 let id = Displays.id(of: s)
                 let m = CGDisplayCopyDisplayMode(id)
-                return ["name": s.localizedName, "id": id, "frame": "\(s.frame)", "scale": s.backingScaleFactor,
+                return ["id": id, "frame": "\(s.frame)", "scale": s.backingScaleFactor,
                         "pixels": "\(m?.pixelWidth ?? 0)x\(m?.pixelHeight ?? 0)", "hz": m?.refreshRate ?? 0]
             },
-            "airpods_output": HeadphoneCatalog.currentOutputAddress() ?? "none",
         ]
         // Every setting this app stores.
         let keys = Array(Settings.flagDefaults.keys) + Array(Settings.choiceDefaults.keys) + [

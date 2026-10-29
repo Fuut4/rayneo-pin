@@ -41,6 +41,10 @@ final class Telemetry {
     ]
 
     private let queue = DispatchQueue(label: "telemetry", qos: .utility)
+    /// Uploads a compact copy for analysis (Settings › General), nil when off.
+    private var uploader: TelemetryUploader?
+    /// Set before `start`; takes effect for the next session.
+    var upload = false
     private var handles: [String: FileHandle] = [:]
     private var buffers: [String: Data] = [:]
     private var written = 0
@@ -73,9 +77,15 @@ final class Telemetry {
                 handles[name] = try? FileHandle(forWritingTo: url)
                 buffers[name] = Data((header.joined(separator: ",") + "\n").utf8)
             }
+            uploader = upload ? TelemetryUploader(info: meta, queue: queue) : nil
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + 0.5, repeating: 0.5)
-            timer.setEventHandler { [weak self] in self?.flush() }
+            var ticks = 0
+            timer.setEventHandler { [weak self] in
+                self?.flush()
+                ticks += 1
+                if ticks % 20 == 0 { self?.uploader?.send() } // every 10 s
+            }
             timer.resume()
             flushTimer = timer
             enabled = true
@@ -84,13 +94,26 @@ final class Telemetry {
 
     func stop() {
         enabled = false
+        let sendRest = upload // sharing just switched off: whatever is pending is dropped, not sent
         queue.async { [self] in
             flush()
             flushTimer?.cancel()
             flushTimer = nil
+            if sendRest { uploader?.send() } else { uploader?.cancel() }
+            uploader = nil
             for h in handles.values { try? h.close() }
             handles.removeAll()
             buffers.removeAll()
+        }
+    }
+
+    /// Stops recording and deletes every session on this Mac.
+    func deleteAll(then: @escaping () -> Void) {
+        stop()
+        queue.async { [self] in
+            try? FileManager.default.removeItem(at: Telemetry.folder)
+            session = nil
+            DispatchQueue.main.async(execute: then)
         }
     }
 
@@ -101,6 +124,7 @@ final class Telemetry {
         queue.async { [self] in
             guard buffers[stream] != nil, written < limit else { return }
             buffers[stream]!.append(contentsOf: line.utf8)
+            uploader?.offer(stream, fields)
             written += line.utf8.count
             if buffers[stream]!.count > 256_000 { flush(stream) }
         }
@@ -153,3 +177,114 @@ func f3(_ x: Double) -> String { x.isFinite ? String(format: "%.3f", x) : "" }
 func f4(_ x: Double) -> String { x.isFinite ? String(format: "%.4f", x) : "" }
 func deg3(_ r: Double) -> String { f3(r * 180 / .pi) }
 func deg4(_ r: Double) -> String { f4(r * 180 / .pi) }
+
+/// Sends a compact copy of the session to the project's Supabase database while it runs, so it can
+/// be analyzed without exporting anything: dense streams thinned (IMU 20/s, frames 30/s, overview
+/// 2/s) but every AirPods sample, every event, every IMU gap and every stalled or jumping frame kept.
+/// The key below can only insert rows; it can't read, change or delete anything.
+final class TelemetryUploader {
+    static let endpoint = URL(string: "https://umrcguqdblcwdtccfeit.supabase.co/rest/v1/")!
+    static let key = "sb_publishable_YiW9vqbk9IHAoQ5aBQZ6GQ_QSTxvpU9"
+
+    /// Columns of each table (a subset of the CSV columns) and which of them hold text.
+    static let tables: [String: (columns: [String], text: Set<String>)] = [
+        "frames": (["t", "dt_ms", "present_in_ms", "prediction_ms", "source", "pose_yaw", "pose_pitch", "pose_roll", "speed", "motion",
+                    "euro_cutoff_hz", "steady_delta", "anchor_yaw", "anchor_pitch", "head_yaw", "head_pitch", "head_roll", "bottom_delta",
+                    "heading_correction", "camera_correction", "zoom", "zoom_fix", "lock_blend", "following", "drawn", "draw_reason", "work_ms"],
+                   ["source", "draw_reason"]),
+        "imu": (["t", "dt_ms", "acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z", "temp_c", "proximity", "yaw", "pitch", "roll",
+                 "bias_x", "bias_y", "bias_z", "omega_x", "omega_y", "omega_z", "still_s", "gravity_rejected", "state", "temp_shift_y", "scale_y"],
+                ["state"]),
+        "airpods": (["t", "sensor_t", "arrival", "delay_ms", "bud", "yaw", "pitch", "roll", "rate_x", "rate_y", "rate_z", "speed",
+                     "glasses_yaw", "glasses_pitch", "glasses_roll", "glasses_x", "glasses_y", "glasses_z", "glasses_speed", "speed_mismatch",
+                     "rotated_x", "rotated_y", "rotated_z", "vector_mismatch", "as_glasses_yaw", "as_glasses_pitch", "as_glasses_roll",
+                     "yaw_vs_glasses", "phase", "left", "right", "up", "down", "progress", "ready", "fit", "pairs", "lag_ms", "glitches",
+                     "jumps", "gaps", "bud_switches", "reseats", "restarts", "ignored", "heading_correction"],
+                    ["phase"]),
+        "state": (Telemetry.headers["state"]!, ["glasses_state", "tracking", "cal_phase"]),
+        "events": (["t", "event", "details"], ["event", "details"]),
+    ]
+
+    let session = UUID()
+    private let queue: DispatchQueue
+    private var pending: [String: [[String: Any]]] = [:]
+    private var counts: [String: Int] = [:]
+    private var lastHeadYaw: Double?
+    private var sessionSent = false
+    private let info: [String: Any]
+    private var sending = false
+    private var cancelled = false
+
+    init(info: [String: Any], queue: DispatchQueue) {
+        self.info = info // already free of anything identifying (AppDelegate.sessionInfo)
+        self.queue = queue
+    }
+
+    /// Called on the telemetry queue with each CSV row (header order).
+    func offer(_ stream: String, _ fields: [String]) {
+        guard let table = TelemetryUploader.tables[stream], let header = Telemetry.headers[stream] else { return }
+        let n = (counts[stream] ?? 0) + 1
+        counts[stream] = n
+        func value(_ name: String) -> Double? { header.firstIndex(of: name).flatMap { Double(fields[$0]) } }
+        switch stream {
+        case "imu": guard n % 25 == 0 || (value("dt_ms") ?? 0) > 10 else { return }
+        case "state": guard n % 10 == 0 else { return }
+        case "frames":
+            let yaw = value("head_yaw")
+            let jumped = yaw != nil && lastHeadYaw != nil && abs(yaw! - lastHeadYaw!) > 0.5
+            lastHeadYaw = yaw ?? lastHeadYaw
+            guard n % 4 == 0 || jumped || (value("dt_ms") ?? 0) > 20 else { return }
+        default: break
+        }
+        var row: [String: Any] = ["session_id": session.uuidString]
+        for (i, name) in header.enumerated() where i < fields.count && table.columns.contains(name) {
+            var f = fields[i]
+            if f.hasPrefix("\""), f.hasSuffix("\""), f.count >= 2 { f = String(f.dropFirst().dropLast()) }
+            if f.isEmpty { continue }
+            if table.text.contains(name) { row[name] = f } else if let d = Double(f), d.isFinite { row[name] = d }
+        }
+        pending[stream, default: []].append(row)
+        // A long offline stretch must not grow without bound: keep the newest.
+        if pending[stream]!.count > 60_000 { pending[stream]!.removeFirst(10_000) }
+    }
+
+    /// Nothing more is sent after this (a request already in flight still completes).
+    func cancel() { cancelled = true }
+
+    /// Posts what's pending (the session row first). Failed batches stay queued for the next try.
+    func send() {
+        guard !sending, !cancelled else { return }
+        if !sessionSent {
+            sending = true
+            post("sessions", [["id": session.uuidString, "revision": info["revision"] ?? "", "info": info]]) { [self] ok in
+                sessionSent = ok
+                sending = false
+                if ok { send() }
+            }
+            return
+        }
+        guard let (stream, rows) = pending.first(where: { !$0.value.isEmpty }) else { return }
+        let batch = Array(rows.prefix(2000))
+        sending = true
+        post(stream, batch) { [self] ok in
+            if ok { pending[stream]!.removeFirst(min(batch.count, pending[stream]!.count)) }
+            sending = false
+            if ok { send() }
+        }
+    }
+
+    private func post(_ table: String, _ rows: [[String: Any]], done: @escaping (Bool) -> Void) {
+        var request = URLRequest(url: TelemetryUploader.endpoint.appendingPathComponent(table))
+        request.httpMethod = "POST"
+        request.setValue(TelemetryUploader.key, forHTTPHeaderField: "apikey")
+        request.setValue("Bearer \(TelemetryUploader.key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: rows)
+        request.timeoutInterval = 30
+        URLSession.shared.dataTask(with: request) { [queue] _, response, _ in
+            let ok = ((response as? HTTPURLResponse)?.statusCode ?? 0) / 100 == 2
+            queue.async { done(ok) }
+        }.resume()
+    }
+}

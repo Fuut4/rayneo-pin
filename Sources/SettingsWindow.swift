@@ -27,6 +27,10 @@ final class SettingsModel: ObservableObject {
         Binding(get: { self.app.settings.flag(key) }, set: { self.app.setFlag(key, $0); self.changed() })
     }
 
+    var telemetry: Binding<TelemetryChoice> {
+        Binding(get: { self.app.telemetryChoice ?? .off }, set: { self.app.setTelemetryChoice($0); self.changed() })
+    }
+
     func choice(_ key: String) -> Binding<String> {
         Binding(get: { self.app.settings.choice(key) }, set: { self.app.setChoice(key, $0); self.changed() })
     }
@@ -148,7 +152,7 @@ struct ToggleRow: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case general, display, text, tracking, anchoring, accuracy, performance, shortcuts, about
+    case general, display, text, tracking, anchoring, accuracy, performance, shortcuts, privacy, about
     var id: String { rawValue }
 
     var title: String {
@@ -161,6 +165,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .accuracy: return "Accuracy"
         case .performance: return "Performance"
         case .shortcuts: return "Shortcuts"
+        case .privacy: return "Privacy"
         case .about: return "About"
         }
     }
@@ -175,6 +180,7 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         case .accuracy: return ("scope", .red)
         case .performance: return ("speedometer", .teal)
         case .shortcuts: return ("command", .purple)
+        case .privacy: return ("hand.raised.fill", .blue)
         case .about: return ("info.circle.fill", .secondary)
         }
     }
@@ -217,6 +223,7 @@ struct SettingsView: View {
                 case .accuracy: accuracy
                 case .performance: performance
                 case .shortcuts: shortcuts
+                case .privacy: privacy
                 case .about: about
                 }
             }
@@ -262,8 +269,32 @@ struct SettingsView: View {
                 ToggleRow(title: "Open at login", isOn: m.login)
                 ToggleRow(title: "Developer mode", detail: "Live sensor and pipeline data in the glasses. ⌃⌥D", isOn: m.developer)
                 ToggleRow(title: "Also show developer data on the Mac", detail: "In a window you can screenshot.", isOn: m.developerOnMac)
-                ToggleRow(title: "Record telemetry", detail: "Every glasses and AirPods sample and every frame, with all values and decisions, for analysis. Roughly 300–400 MB per hour; the last 8 sessions are kept.", isOn: m.flag("telemetry"))
-                Row(title: "Telemetry", detail: "~/Library/Logs/RayNeoPin — one folder per session. Export zips the current session onto the Desktop, ready to send.") {
+            }
+        }
+    }
+
+    private var privacy: some View {
+        Form {
+            Section {
+                Picker("Telemetry", selection: m.telemetry) {
+                    ForEach(TelemetryChoice.allCases, id: \.self) { c in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(c.title)
+                            Text(c.detail).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        .tag(c)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+            } header: {
+                Text("Telemetry")
+            } footer: {
+                Text("Telemetry only exists to find and fix drift and tracking glitches. It's off unless you turn it on, and Off stops it immediately.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("Your recordings") {
+                Row(title: "On this Mac", detail: "~/Library/Logs/RayNeoPin, one folder per session (the last 8 are kept). Export zips the current session onto the Desktop.") {
                     HStack {
                         Button("Show in Finder") {
                             try? FileManager.default.createDirectory(at: Telemetry.folder, withIntermediateDirectories: true)
@@ -272,6 +303,20 @@ struct SettingsView: View {
                         Button("Export Session", action: m.run { m.app.exportTelemetry() })
                     }
                 }
+                Row(title: "Delete all recordings", detail: "Removes every session from this Mac.") {
+                    Button("Delete All…", role: .destructive) {
+                        let alert = NSAlert()
+                        alert.messageText = "Delete every telemetry recording on this Mac?"
+                        alert.informativeText = "This can't be undone."
+                        alert.addButton(withTitle: "Delete")
+                        alert.addButton(withTitle: "Cancel")
+                        alert.buttons.first?.hasDestructiveAction = true
+                        if alert.runModal() == .alertFirstButtonReturn { m.app.deleteTelemetry() }
+                    }
+                }
+            }
+            Section("What is recorded") {
+                TelemetryDisclosure().padding(.vertical, 4)
             }
         }
     }
@@ -584,6 +629,20 @@ enum SettingsSnapshot {
             guard let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("settings-\(page.rawValue).png"))
+            w.orderOut(nil)
+        }
+        // The first-launch telemetry question.
+        do {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 600),
+                             styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            w.titlebarAppearsTransparent = true
+            w.contentViewController = NSHostingController(rootView: ConsentView { _ in })
+            w.orderFront(nil)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 1))
+            if let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("consent.png"))
+            }
             w.orderOut(nil)
         }
         // The message cards, as they appear in the glasses.
