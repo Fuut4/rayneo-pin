@@ -693,8 +693,8 @@ final class IMU {
             lock.lock()
             fusion.update(acc: acc, gyro: gyro, temperature: f(28), tick: tick)
             // Resting (not worn): 10 rows a second are enough to follow the bias and cooling.
-            if Telemetry.shared.enabled, !raw.asleep || hostTime - lastRestLog >= 0.1 {
-                if raw.asleep { lastRestLog = hostTime }
+            if Telemetry.shared.enabled, !self.raw.asleep || hostTime - lastRestLog >= 0.1 {
+                if self.raw.asleep { lastRestLog = hostTime }
                 logSample(hostTime, tick: tick, acc: acc, gyro: gyro, temperature: f(28), proximity: f(44))
             }
             if fusion.state == .ready { history.append(PoseSample(time: hostTime, q: fusion.q, omega: fusion.omega)) }
