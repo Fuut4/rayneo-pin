@@ -586,6 +586,30 @@ enum SettingsSnapshot {
             try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("settings-\(page.rawValue).png"))
             w.orderOut(nil)
         }
+        // The message cards, as they appear in the glasses.
+        let cards: [(String, OverlayState)] = [
+            ("airpods-step1", OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 1 of 2",
+                                           message: "Now turn your head to the right.",
+                                           bar: .centered(left: 1, right: 0.4, leftLabel: "Left", rightLabel: "Right"), detail: "32%")),
+            ("airpods-step2", OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 2 of 2",
+                                           message: "Look up.", bar: .centered(left: 0.3, right: 0, leftLabel: "Up", rightLabel: "Down"), detail: "52%")),
+            ("gyro", OverlayState(tone: .progress, icon: "gyroscope", title: "Calibrating the gyroscope", step: "Hold still",
+                                  message: "Put the glasses on a flat surface and don't touch them.", bar: .linear(0.6), detail: "60%")),
+            ("done", OverlayState.toast("AirPods calibrated", icon: "airpodspro")),
+            ("warning", OverlayState(tone: .warning, icon: "eyeglasses", title: "Glasses not connected", message: "Connect them with the USB-C cable.")),
+        ]
+        for (name, state) in cards {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 200), styleMask: [.borderless], backing: .buffered, defer: false)
+            w.backgroundColor = .black
+            w.contentView = NSHostingView(rootView: OverlayCard(state: state).environment(\.colorScheme, .dark)
+                .frame(width: 720, height: 200).background(Color.black))
+            w.orderFront(nil)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.5))
+            guard let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("card-\(name).png"))
+            w.orderOut(nil)
+        }
         exit(0)
     }
 }
