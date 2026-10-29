@@ -298,13 +298,9 @@ enum PermissionsWindow {
 
     static func show(_ app: AppDelegate) {
         if let window { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); return }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
-                         styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
-        w.titlebarAppearsTransparent = true
+        let w = window(for: app)
+        w.styleMask.insert(.closable)
         w.title = "RayNeoPin Permissions"
-        w.isReleasedWhenClosed = false
-        w.contentViewController = NSHostingController(rootView: PermissionsView(model: PermissionsModel(app), standalone: true)
-            .background(Color(nsColor: .windowBackgroundColor)))
         if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main {
             let f = screen.visibleFrame, size = w.frame.size
             w.setFrameOrigin(NSPoint(x: f.midX - size.width / 2, y: f.midY - size.height / 2))
@@ -312,5 +308,20 @@ enum PermissionsWindow {
         window = w
         NSApp.activate(ignoringOtherApps: true)
         w.makeKeyAndOrderFront(nil)
+    }
+
+    /// A fixed-size window (also used for the CI snapshot).
+    static func window(for app: AppDelegate) -> NSWindow {
+        let size = NSSize(width: 560, height: 470)
+        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                         styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        w.titlebarAppearsTransparent = true
+        w.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: PermissionsView(model: PermissionsModel(app), standalone: true)
+            .frame(width: size.width, height: size.height, alignment: .top)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        host.frame = NSRect(origin: .zero, size: size)
+        w.contentView = host
+        return w
     }
 }

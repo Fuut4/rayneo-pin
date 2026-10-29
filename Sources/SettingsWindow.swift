@@ -652,11 +652,7 @@ enum SettingsSnapshot {
         // The permissions window.
         FileHandle.standardError.write(Data("snapshot permissions window\n".utf8))
         do {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
-                             styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-            w.titlebarAppearsTransparent = true
-            w.contentViewController = NSHostingController(rootView: PermissionsView(model: PermissionsModel(delegate), standalone: true)
-                .background(Color(nsColor: .windowBackgroundColor)))
+            let w = PermissionsWindow.window(for: delegate)
             w.orderFront(nil)
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 1))
             if let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
