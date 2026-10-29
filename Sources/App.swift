@@ -332,7 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }) { self.placeDeveloperPanel() }
         }
 
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        // After an update of an ad-hoc build the old grants no longer apply: clear them, then ask.
+        Permission.resetStaleAfterUpdate()
+        if !CGPreflightScreenCaptureAccess() { permissionMissing() }
         fence.start()
         applySetup()
         applyExtras()
@@ -677,10 +679,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Without Screen Recording permission the glasses would stay black; say so on them and keep checking.
     func permissionMissing() {
-        renderer?.setNotice("Screen Recording permission needed: System Settings › Privacy & Security › Screen & System Audio Recording › turn on RayNeoPin")
+        renderer?.setNotice("Screen Recording permission needed: see the Permissions window on your Mac")
         if !openedSettings {
             openedSettings = true
-            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+            PermissionsWindow.show(self)
         }
         // A running process never sees the grant, so ask a fresh copy of ourselves and relaunch when it says yes.
         if retryTimer == nil {
@@ -746,6 +748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(toggle("Developer Mode", #selector(toggleDeveloper), key: "d") { [weak self] in self?.settings.developer == true })
         menu.addItem(item("Settings…", #selector(showSettings), key: ",", modifiers: .command))
+        menu.addItem(item("Permissions…", #selector(showPermissions)))
         menu.addItem(item("Check for Updates…", #selector(update)))
         let channels = NSMenu()
         for c in UpdateChannel.allCases {
@@ -936,6 +939,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     var settingsWindow: NSWindow?
+
+    @objc func showPermissions() { PermissionsWindow.show(self) }
 
     @objc func showSettings() {
         if settingsWindow == nil {

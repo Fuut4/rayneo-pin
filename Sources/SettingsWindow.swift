@@ -275,6 +275,9 @@ struct SettingsView: View {
 
     private var privacy: some View {
         Form {
+            Section("Permissions") {
+                PermissionsView(model: PermissionsModel(m.app)).padding(.vertical, 4)
+            }
             Section {
                 Picker("Telemetry", selection: m.telemetry) {
                     ForEach(TelemetryChoice.allCases, id: \.self) { c in
@@ -642,6 +645,21 @@ enum SettingsSnapshot {
             guard let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("settings-\(page.rawValue).png"))
+            w.orderOut(nil)
+        }
+        // The permissions window.
+        do {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
+                             styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+            w.titlebarAppearsTransparent = true
+            w.contentViewController = NSHostingController(rootView: PermissionsView(model: PermissionsModel(delegate), standalone: true)
+                .background(Color(nsColor: .windowBackgroundColor)))
+            w.orderFront(nil)
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 1))
+            if let view = w.contentView, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                view.cacheDisplay(in: view.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("permissions.png"))
+            }
             w.orderOut(nil)
         }
         // The first-launch telemetry question.
