@@ -7,6 +7,7 @@
 // headings should differ by a constant; when the glasses' gyro drifts we slowly undo it), or as
 // the only tracker.
 
+import AVFoundation
 import CoreAudio
 import CoreMotion
 import IOBluetooth
@@ -151,11 +152,13 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
         let output = HeadphoneCatalog.currentOutputAddress()
         if let usual, output != usual.uppercased() {
             return HeadphoneCatalog.isConnected(usual) ? "Your AirPods aren't this Mac's sound output."
-                                                       : "Your AirPods are in use on another device."
+                                                       : "Your AirPods are connected to another device."
         }
         if output == nil { return "No AirPods are connected to this Mac." }
         if !isAvailable { return "These headphones don't support head tracking." }
-        return "Put both AirPods in your ears to use them."
+        // Listed as the output yet silent: usually another device holds them (automatic switching),
+        // or they're out of the ears.
+        return "Your AirPods may be connected to another device, or out of your ears."
     }
 }
 
@@ -651,6 +654,31 @@ enum HeadphoneCatalog {
     static func currentOutputAddress() -> String? {
         guard let id = defaultOutput(), let uid = uid(of: id) else { return nil }
         return address(fromUID: uid)
+    }
+
+    /// Plays silence through the current output (call off the main thread). Starting playback is
+    /// what makes automatic switching hand the AirPods to this Mac.
+    static func playSilence(seconds: Double) {
+        let engine = AVAudioEngine()
+        let format = engine.outputNode.inputFormat(forBus: 0)
+        let silence = AVAudioSourceNode { _, _, _, buffers in
+            for b in UnsafeMutableAudioBufferListPointer(buffers) { if let p = b.mData { memset(p, 0, Int(b.mDataByteSize)) } }
+            return noErr
+        }
+        engine.attach(silence)
+        engine.connect(silence, to: engine.mainMixerNode, format: format)
+        guard (try? engine.start()) != nil else { return }
+        Thread.sleep(forTimeInterval: seconds)
+        engine.stop()
+    }
+
+    /// Drops and re-opens the Bluetooth link, then makes them the output (call off the main thread).
+    static func reconnect(address: String) -> Bool {
+        if let bt = IOBluetoothDevice(addressString: address), bt.isConnected() {
+            bt.closeConnection()
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+        return use(address: address)
     }
 
     /// Connected to this Mac over Bluetooth (not necessarily the sound output).

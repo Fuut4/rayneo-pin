@@ -950,7 +950,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                                            message: "Bringing them back to this Mac.")
                 airPodsMissingSince = now
             } else if missingFor >= 3, missingFor <= 7 {
-                airPodsCard = OverlayState(tone: .info, icon: "eyeglasses", title: "Glasses tracking only",
+                airPodsCard = OverlayState(tone: .info, icon: "eyeglasses", title: "Glasses head tracking only",
                                            message: problem ?? "Your AirPods aren't sending head motion.")
                 glassesOnlyShown = true
             } else {

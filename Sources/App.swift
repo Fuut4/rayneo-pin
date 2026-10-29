@@ -63,7 +63,7 @@ final class Settings {
         "follow": false, "lookAwayRecenter": false, "doubleTap": true,
         "strictAccel": true, "temperatureComp": true, "airPodsBias": true, "airPodsScale": false,
         "cameraDrift": false, "typingDrift": false,
-        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true, "reclaimAirPods": true,
+        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true, "reclaimAirPods": true, "recenterOnWear": true,
         // Off until the person chooses otherwise (Privacy.swift).
         "telemetry": false, "uploadTelemetry": false,
     ]
@@ -305,7 +305,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Task { for c in captures { await c.setResting(resting) } }
                 self.renderer?.setResting(resting)
                 if self.settings.tracking != .glasses { if resting { self.headphones.stop() } else { self.headphones.start() } }
-                if !resting { self.bringBackAirPods(automatic: true) }
+                if !resting {
+                    self.bringBackAirPods(automatic: true)
+                    self.recenterWhenSettled()
+                }
                 Telemetry.shared.event(resting ? "resting" : "resumed", time: CACurrentMediaTime())
                 // Taken off (not unplugged): say so on the Mac, briefly.
                 if resting, self.imu.snapshot().connected, Displays.glasses() != nil, self.calibrationTimer == nil {
@@ -1246,30 +1249,79 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Glasses put on: once the head settles into where you'll work, center the screen there.
+    /// Settled means calm, not frozen: under 20 °/s for 0.6 s, at least 0.8 s after putting them on
+    /// (that movement itself doesn't count). If you never settle, it centers after 6 s anyway.
+    func recenterWhenSettled() {
+        guard settings.flag("recenterOnWear") else { return }
+        settleTimer?.invalidate()
+        let start = CACurrentMediaTime()
+        var calmSince: Double?
+        settleTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let now = CACurrentMediaTime()
+            if self.wasAsleep { timer.invalidate(); return } // taken off again
+            let calm = simd_length(self.imu.snapshot().omega) < 20 * .pi / 180
+            calmSince = calm ? (calmSince ?? now) : nil
+            let settled = now - start > 0.8 && calmSince.map { now - $0 >= 0.6 } == true
+            guard settled || now - start > 6 else { return }
+            timer.invalidate()
+            self.renderer?.recenter()
+            self.renderer?.show("Centered", seconds: 1, icon: "scope", tone: .success)
+            Telemetry.shared.event("centered after putting the glasses on", details: String(format: "%.1f s", now - start), time: now)
+        }
+    }
+
+    private var settleTimer: Timer?
+
     @objc func bringBackAirPodsNow() { bringBackAirPods(automatic: false) }
 
-    /// Makes the usual AirPods this Mac's sound output again (connecting takes them back from an
-    /// iPhone), so their head tracking comes back. Done when the glasses are put on, never in the
-    /// middle of a session: if the iPhone takes them for a call or a video, that is left alone.
+    /// Brings the usual AirPods back to this Mac so their head tracking returns. Done when the
+    /// glasses are put on, never in the middle of a session: if the iPhone takes them for a call or
+    /// a video, that is left alone.
+    ///
+    /// Being the Mac's sound output isn't enough: with automatic switching the AirPods can be listed
+    /// as the output while the iPhone holds them, and then no motion arrives. They come back to
+    /// the device that starts playing, so this plays a moment of silence, and if that doesn't do
+    /// it, reconnects them.
     func bringBackAirPods(automatic: Bool) {
-        guard settings.tracking != .glasses, !reclaimingAirPods, let address = settings.usualAirPods,
-              HeadphoneCatalog.currentOutputAddress() != address.uppercased() else { return }
+        guard settings.tracking != .glasses, !reclaimingAirPods, let address = settings.usualAirPods else { return }
+        let isOutput = HeadphoneCatalog.currentOutputAddress() == address.uppercased()
+        guard !isOutput || headphones.dataAge > 2 else { return } // already working
         if automatic, !settings.flag("reclaimAirPods") { return }
         reclaimingAirPods = true
         renderer?.setAirPodsConnecting(true)
-        Telemetry.shared.event("bringing airpods back", details: automatic ? "glasses put on" : "menu", time: CACurrentMediaTime())
+        Telemetry.shared.event("bringing airpods back", details: (automatic ? "glasses put on" : "menu") + (isOutput ? ", output but silent" : ""),
+                               time: CACurrentMediaTime())
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let ok = HeadphoneCatalog.use(address: address)
+            var ok = HeadphoneCatalog.use(address: address)
+            if ok { HeadphoneCatalog.playSilence(seconds: 1.5) }
+            self?.restartAirPodsMotion()
+            Thread.sleep(forTimeInterval: 3)
+            if ok, (self?.headphones.dataAge ?? 0) > 2 {
+                Telemetry.shared.event("airpods still silent: reconnecting", time: CACurrentMediaTime())
+                ok = HeadphoneCatalog.reconnect(address: address)
+                if ok { HeadphoneCatalog.playSilence(seconds: 1.5) }
+                self?.restartAirPodsMotion()
+                Thread.sleep(forTimeInterval: 3)
+            }
+            let moving = (self?.headphones.dataAge ?? .infinity) < 2
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.reclaimingAirPods = false
                 self.renderer?.setAirPodsConnecting(false)
-                Telemetry.shared.event(ok ? "airpods back on this mac" : "airpods not reachable", time: CACurrentMediaTime())
-                guard ok else { return } // the glasses then say "Glasses tracking only" with the reason
-                self.seedAirPodsCalibration()
-                self.headphones.stop() // CoreMotion follows the new route after a restart
-                self.headphones.start()
+                Telemetry.shared.event(moving ? "airpods back on this mac" : ok ? "airpods connected, no motion" : "airpods not reachable",
+                                       time: CACurrentMediaTime())
+                if moving { self.seedAirPodsCalibration() }
             }
+        }
+    }
+
+    /// CoreMotion follows a new route only after a restart.
+    private func restartAirPodsMotion() {
+        DispatchQueue.main.sync {
+            headphones.stop()
+            headphones.start()
         }
     }
 

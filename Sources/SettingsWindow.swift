@@ -482,6 +482,7 @@ struct SettingsView: View {
             }
             Section("Recentering") {
                 ToggleRow(title: "Double-tap the glasses to recenter", isOn: m.flag("doubleTap"))
+                ToggleRow(title: "Center when you put the glasses on", detail: "Once your head settles, the screen is centered where you look.", isOn: m.flag("recenterOnWear"))
                 ToggleRow(title: "Auto drift correction", detail: "Slowly turns the screen toward where you look on average.", isOn: m.value(\.autoRecenter))
             }
             Section("Comfort") {

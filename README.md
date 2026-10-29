@@ -88,7 +88,7 @@ The AirPods calibrate with a short guided movement, shown in the glasses on a ba
 
 Each side only fills as far as the glasses and the AirPods agree you turned, so a glitch or a bud adjusting in your ear can't fill it. Each finished side plays a sound: left and right come from that ear, up is higher, down is lower. A chime marks the end. The result is saved per pair and per earbud; **Recalibrate AirPods** starts over.
 
-**When the AirPods aren't available** (your iPhone took them, they're in their case, or they aren't the sound output), the glasses show a short notice, *Glasses tracking only*, with the reason, and tracking continues with the glasses. When the AirPods come back, a notice says so. Putting the glasses on brings your usual AirPods back to this Mac, as choosing them in Control Center would; this never happens mid-session, so a call on the iPhone isn't interrupted. Turn it off under Settings › Head Tracking, or do it by hand with **Bring AirPods Back to This Mac**.
+**When the AirPods aren't available** (your iPhone took them, they're in their case, or they aren't the sound output), the glasses show a short notice, *Glasses head tracking only*, with the reason, and tracking continues with the glasses. When the AirPods come back, a notice says so. Putting the glasses on brings your usual AirPods back to this Mac, as choosing them in Control Center would. AirPods can be listed as the Mac's output while the iPhone actually holds them; RayNeoPin then plays a moment of silence, which should make them switch to the Mac, and reconnects them if that isn't enough. None of this happens mid-session, so a call on the iPhone isn't interrupted. Turn it off under Settings › Head Tracking, or do it by hand with **Bring AirPods Back to This Mac**.
 
 ## Controls
 
@@ -180,7 +180,7 @@ Sleep and wake arrive as ack frames (`0xC8`) with `0x41` / `0x42` at byte 8. The
 
 ### Rest
 
-When the glasses come off your head (their proximity sensor reads about 1200 off the head and 65535 on it), or are unplugged, RayNeoPin rests: no capture, no frames, no AirPods motion (sparing their battery), no caret polling. The glasses' IMU keeps streaming, since it's cheap, refines the gyro bias while they lie still, and carries the proximity readings that wake it up. The displays stay as they are, so no window moves. A card at the top of the Mac's screen says so. Putting the glasses on resumes everything within a second; if the AirPods aren't available then, a short alert in the glasses says it continues with the glasses only.
+When the glasses come off your head (their proximity sensor reads about 1200 off the head and 65535 on it), or are unplugged, RayNeoPin rests: no capture, no frames, no AirPods motion (sparing their battery), no caret polling. The glasses' IMU keeps streaming, since it's cheap, refines the gyro bias while they lie still, and carries the proximity readings that wake it up. The displays stay as they are, so no window moves. A card at the top of the Mac's screen says so. Putting the glasses on resumes everything within a second, and once your head settles the screen is centered where you look; if the AirPods aren't available then, a short alert in the glasses says it continues with the glasses only.
 
 ### Rendering
 
