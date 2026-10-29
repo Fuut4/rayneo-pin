@@ -73,6 +73,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     func start(_ source: Source) async {
         await stop()
         self.source = source
+        // Resting: remember what to capture, start it on resume. Nothing else may restart it,
+        // or macOS keeps showing "Currently Sharing" with the glasses off.
+        if resting { paused = true; return }
         do {
             guard let (filter, captured, points) = try await makeFilter(source) else { return }
             var size = captured
@@ -118,16 +121,18 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
     private(set) var refreshes = 0
     private(set) var paused = false
 
-    /// Stops capturing while the glasses are asleep (nothing to show, ~free CPU/GPU).
-    func pause() async {
-        guard stream != nil, !paused else { return }
-        paused = true
-        await stop()
-    }
+    /// True while the glasses aren't worn or aren't plugged in: no capture at all.
+    private(set) var resting = false
 
-    func resume() async {
-        guard paused, let source else { return }
-        await start(source)
+    func setResting(_ on: Bool) async {
+        guard on != resting else { return }
+        resting = on
+        if on {
+            paused = true
+            await stop()
+        } else if paused, let source {
+            await start(source)
+        }
     }
 
     func stop() async {

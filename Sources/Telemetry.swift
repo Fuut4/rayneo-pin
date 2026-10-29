@@ -214,6 +214,7 @@ final class TelemetryUploader {
     private let info: [String: Any]
     private var sending = false
     private var cancelled = false
+    private var lastStream = ""
 
     init(info: [String: Any], queue: DispatchQueue) {
         self.info = info // already free of anything identifying (AppDelegate.sessionInfo)
@@ -256,24 +257,32 @@ final class TelemetryUploader {
         guard !sending, !cancelled else { return }
         if !sessionSent {
             sending = true
-            post("sessions", [["id": session.uuidString, "revision": info["revision"] ?? "", "info": info]]) { [self] ok in
+            post("sessions", [["id": session.uuidString, "revision": info["revision"] ?? "", "info": info]]) { [self] status in
+                let ok = status / 100 == 2
                 sessionSent = ok
                 sending = false
                 if ok { send() }
             }
             return
         }
-        guard let (stream, rows) = pending.first(where: { !$0.value.isEmpty }) else { return }
-        let batch = Array(rows.prefix(2000))
+        // Tables in turn, so one that keeps failing can't hold up the others.
+        let streams = pending.keys.sorted().filter { !pending[$0]!.isEmpty }
+        guard !streams.isEmpty else { return }
+        let stream = streams.first { $0 > lastStream } ?? streams[0]
+        lastStream = stream
+        let batch = Array(pending[stream]!.prefix(2000))
         sending = true
-        post(stream, batch) { [self] ok in
-            if ok { pending[stream]!.removeFirst(min(batch.count, pending[stream]!.count)) }
+        post(stream, batch) { [self] status in
+            // 2xx sent; 4xx the database refused it and always will, so drop it; else retry later.
+            let done = status / 100 == 2 || status / 100 == 4
+            if done { pending[stream]!.removeFirst(min(batch.count, pending[stream]!.count)) }
             sending = false
-            if ok { send() }
+            if done { send() }
         }
     }
 
-    private func post(_ table: String, _ rows: [[String: Any]], done: @escaping (Bool) -> Void) {
+    /// HTTP status, or 0 when the request didn't get an answer.
+    private func post(_ table: String, _ rows: [[String: Any]], done: @escaping (Int) -> Void) {
         var request = URLRequest(url: TelemetryUploader.endpoint.appendingPathComponent(table))
         request.httpMethod = "POST"
         request.setValue(TelemetryUploader.key, forHTTPHeaderField: "apikey")
@@ -283,8 +292,8 @@ final class TelemetryUploader {
         request.httpBody = try? JSONSerialization.data(withJSONObject: rows)
         request.timeoutInterval = 30
         URLSession.shared.dataTask(with: request) { [queue] _, response, _ in
-            let ok = ((response as? HTTPURLResponse)?.statusCode ?? 0) / 100 == 2
-            queue.async { done(ok) }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            queue.async { done(status) }
         }.resume()
     }
 }

@@ -291,23 +291,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.rescueWindows() }
         // Display reconfigurations can move our windows without telling us; check every second.
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            guard let self, let glasses = Displays.glasses() else { return }
+            guard let self else { return }
+            // Glasses taken off or unplugged: rest. No capture, no frames, no AirPods motion (their
+            // battery and Bluetooth) until they're worn again. The glasses' IMU keeps streaming,
+            // because it is cheap, it's how the gyro bias is refined while they lie still, and it
+            // carries the wake-up notice. The displays stay as they are, so no window moves.
+            let resting = self.imu.isAsleep || !self.imu.snapshot().connected || Displays.glasses() == nil
+            if resting != self.wasAsleep {
+                self.wasAsleep = resting
+                let captures = [self.capture] + Array(self.sideCaptures.values)
+                Task { for c in captures { await c.setResting(resting) } }
+                self.renderer?.setResting(resting)
+                if self.settings.tracking != .glasses { if resting { self.headphones.stop() } else { self.headphones.start() } }
+                Telemetry.shared.event(resting ? "resting" : "resumed", time: CACurrentMediaTime())
+            }
+            guard let glasses = Displays.glasses() else { return }
             self.renderer?.keepOn(glasses)
             if self.settings.tracking != .glasses, !self.wasAsleep {
                 self.headphones.keepAlive()
                 self.renderer?.setAirPodsProblem(self.headphones.problem(outputIsBluetooth: HeadphoneCatalog.currentOutputAddress() != nil))
-            }
-            // Glasses taken off: rest. No capture, no frames, no AirPods motion (their battery and
-            // Bluetooth) until they're worn again. The glasses' IMU keeps streaming, because it is
-            // cheap, it's how the gyro bias is refined while they lie still, and it keeps the wake-up
-            // notice coming. The displays stay as they are, so no window moves.
-            let asleep = self.imu.isAsleep
-            if asleep != self.wasAsleep {
-                self.wasAsleep = asleep
-                let captures = [self.capture] + Array(self.sideCaptures.values)
-                Task { for c in captures { if asleep { await c.pause() } else { await c.resume() } } }
-                self.renderer?.setResting(asleep)
-                if self.settings.tracking != .glasses { if asleep { self.headphones.stop() } else { self.headphones.start() } }
             }
             if self.settings.developer { self.renderer?.setDeveloperDisplayInfo(self.developerDisplayInfo()) }
             if self.settings.developer, self.settings.developerOnMac, let panel = self.developerPanel, !NSScreen.screens.contains(where: {
@@ -381,6 +383,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let c = Capture()
             c.ownWindowIDs = capture.ownWindowIDs
             sideCaptures[side] = c
+            if wasAsleep { Task { await c.setResting(true) } }
         }
         renderer?.setSideScreens(sideCaptures.map { ($0.value, $0.key) })
         guard !wanted.isEmpty, let main = monitor else { return }
