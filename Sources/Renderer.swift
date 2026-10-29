@@ -211,6 +211,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     private var steadyMoved = 0.0 // when steadyPose last changed
     private var heading = HeadingReference()
     private var calibration = AirPodsCalibration()
+    private var reseatUndo: (time: Double, calibration: AirPodsCalibration)? // render thread
+    private var lastIngest = 0.0
     private var airPodsCard: OverlayState? // AirPods calibration, or why they aren't used right now
     private var airPodsCalibrating = false // for start/finish sounds
     private var airPodsAnnounced = false // sounds/toast only for the first calibration, never for refinements
@@ -804,9 +806,13 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         }
         if let seed = airPodsSeed {
             airPodsSeed = nil
-            calibration.reset()
-            calibration.seed(seed)
-            airPodsAnnounced = true // known AirPods: calibrate silently
+            // Already calibrated (the AirPods came back from the iPhone): keep the live result.
+            // Re-seeding threw it away and showed the calibration card again.
+            if !calibration.ready {
+                calibration.reset()
+                calibration.seed(seed)
+                airPodsAnnounced = true // known AirPods: calibrate silently
+            }
         }
         airPodsSaved = calibration.saved ?? airPodsSaved
         let notice = notice
@@ -846,7 +852,17 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var airpods: Headphones.Sample?
         if p.tracking != .glasses {
             let fresh = headphones.drain()
+            // Back from a rest: a "reseat" just before the glasses came off was them being taken
+            // off (the glasses moved, the AirPods didn't), not the AirPods moving in the ears. Undo it.
+            if frameStart - lastIngest > 1, let undo = reseatUndo, lastIngest - undo.time < 5 {
+                calibration = undo.calibration
+                Telemetry.shared.event("airpods reseat undone (glasses were being taken off)", time: frameStart)
+            }
+            if frameStart - lastIngest > 1 { reseatUndo = nil }
+            lastIngest = frameStart
+            let before = calibration
             calibration.ingest(fresh, glasses: imu.pose(at:))
+            if calibration.reseats > before.reseats { reseatUndo = (frameStart, before) }
             airpods = headphones.latest()
             // Both devices sit on the same head, so they must rotate alike. AirPods turning while the
             // glasses don't (being adjusted in the ear, reconnecting, a bud swap) is not head motion:
@@ -874,7 +890,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                 // latency doesn't show up as a heading difference.
                 for f in fresh {
                     guard let ap = calibration.pose(f), let g = imu.pose(at: calibration.glassesTime(f)) else { continue }
-                    heading.update(glasses: g.q.yawPitch.yaw, airpods: ap.yawPitch.yaw, dt: 1 / max(headphones.stats.rate, 10))
+                    heading.update(glasses: g.q.yawPitch.yaw, airpods: ap.yawPitch.yaw, dt: 1 / max(headphones.stats.rate, 10),
+                                   trusted: calibration.fitError < 0.15)
                     devYawGap = wrapAngle(g.q.yawPitch.yaw - ap.yawPitch.yaw)
                 }
             }
@@ -910,7 +927,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             for (i, side) in CalibrationSound.allCases.enumerated() where sides[i] >= 1 && lastSides[i] < 1 { side.play() }
         }
         lastSides = sides
-        if calibrating {
+        // A saved calibration finishing silently (it only needs a moment of movement) shows no card.
+        if calibrating, !calibration.seeded {
             // One bar, filling outward from the center: left/right in step 1, up/down in step 2.
             let pct = "\(Int(calibration.progress * 100))%"
             switch calibration.phase {
@@ -974,9 +992,11 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         } else if s.ready {
             pose = s.q
             omega = s.omega
-            if p.tracking == .both, calibration.ready, airpods != nil {
+            // The correction stays applied while the AirPods are away (another device took them):
+            // dropping it, then adding it back when they return, made the screen jump by all of it.
+            if p.tracking == .both {
                 pose = simd_quatd(angle: heading.correction, axis: SIMD3(0, 1, 0)) * s.q
-                usingAirPods = true
+                usingAirPods = calibration.ready && airpods != nil
             }
         }
         if usingAirPods != airPodsActive { lock.lock(); airPodsActive = usingAirPods; lock.unlock() }

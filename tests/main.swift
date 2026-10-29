@@ -265,5 +265,22 @@ do {
     check(hintAfterLeft.contains("RIGHT"), "after turning left the hint asks for the right (\(hintAfterLeft))")
 }
 
+// 9. The glasses' gyro reads a false 1 °/s turn for 30 s while the head (and AirPods) stay still
+// (seen in telemetry): with a trusted AirPods calibration the screen must not slide far.
+do {
+    let deg = Double.pi / 180
+    var trusted = HeadingReference(), capped = HeadingReference()
+    var glassesYaw = 0.0
+    var worstTrusted = 0.0, worstCapped = 0.0
+    for _ in 0..<(25 * 30) {
+        glassesYaw += 1 * deg / 25
+        trusted.update(glasses: glassesYaw, airpods: 0, dt: 1.0 / 25, trusted: true)
+        capped.update(glasses: glassesYaw, airpods: 0, dt: 1.0 / 25)
+        worstTrusted = max(worstTrusted, abs(glassesYaw + trusted.correction))
+        worstCapped = max(worstCapped, abs(glassesYaw + capped.correction))
+    }
+    check(worstTrusted < 4 * deg, String(format: "a false 1 °/s glasses turn: the screen slides at most %.1f° (was %.1f°)", worstTrusted / deg, worstCapped / deg))
+}
+
 print(failures == 0 ? "All tests passed" : "\(failures) test(s) failed")
 exit(failures == 0 ? 0 : 1)

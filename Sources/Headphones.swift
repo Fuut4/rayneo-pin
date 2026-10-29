@@ -575,12 +575,19 @@ struct HeadingReference {
     mutating func reset() { offset = nil }
 
     /// `g` is the glasses' uncorrected heading and `a` the AirPods heading, at the same instant.
-    mutating func update(glasses g: Double, airpods a: Double, dt: Double) {
+    /// `trusted`: the AirPods calibration is precise, so a growing gap is the glasses' fault.
+    mutating func update(glasses g: Double, airpods a: Double, dt: Double, trusted: Bool = false) {
         let o = wrapAngle(g + correction - a)
         guard let ref = offset else { offset = o; return }
-        // Real gyro drift is well under 0.1 °/s; capping at 0.5 °/s means nothing can make the screen jump.
-        let maxStep = 0.5 * .pi / 180 * dt
-        correction -= min(max(wrapAngle(o - ref) * min(dt / 4, 1), -maxStep), maxStep)
+        let error = wrapAngle(o - ref)
+        // Normally at most 0.5 °/s, so nothing can make the screen jump. The glasses' gyro can
+        // briefly read a false turn of ~1 °/s (seen in telemetry while typing, head still), which
+        // that couldn't keep up with: with a trusted calibration, a gap over 2° is closed faster,
+        // up to 2 °/s, still smoothly.
+        let deg = Double.pi / 180
+        let rate = trusted ? min(0.5 + max(abs(error) / deg - 2, 0) * 0.25, 2) : 0.5
+        let maxStep = rate * deg * dt
+        correction -= min(max(error * min(dt / (trusted ? 2 : 4), 1), -maxStep), maxStep)
     }
 }
 
