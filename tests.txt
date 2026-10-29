@@ -1,0 +1,23 @@
+PASS rest bias learned (error 0.000 °/s)
+PASS complementary: tilt error 1.03° after 2 min of motion
+PASS kalman: tilt error 0.30° after 2 min of motion
+PASS kalman: pitch-axis bias learned while moving (0.526 vs 0.500 °/s)
+      strict=off: tilt after 2 s of acceleration 10.71°
+      strict=on: tilt after 2 s of acceleration 0.00°
+PASS strict gravity rejection holds tilt under 1° while accelerating
+PASS temperature slope 0.0200 °/s/°C (expected 0.0200)
+PASS temperature model survives JSON
+PASS bias tracked warming without rest: 0.154 °/s (true 0.160)
+PASS double tap detected once (1)
+PASS no tap from fast smooth head turns
+PASS 1€ converges on a still pose
+PASS 1€ lag during a 86 °/s turn: 0.47°
+PASS AirPods calibration, 1 in 8 samples glitched, finished after 6.7 s of movement (lag 55 ms, fit 2%, glitches skipped 49)
+PASS AirPods progress bar never went backwards
+PASS AirPods pose matches the glasses within 0.65°
+PASS AirPods 10° re-center (Spatial Audio) detected and absorbed: error 0.24° (jumps 26→27, ready 1, fit 0.014, lag 57 ms, reseats 0, gaps 0)
+PASS AirPods stay calibrated through 40 s of sitting still
+PASS after turning left the hint asks for the right (step 1 of 2: now to the RIGHT)
+PASS a false 1 °/s glasses turn: the screen slides at most 4.0° (was 15.6°)
+All tests passed
+exit status 0
