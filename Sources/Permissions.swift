@@ -196,6 +196,8 @@ final class PermissionsModel: ObservableObject {
     var shown: [Permission] { Permission.allCases.filter { $0.relevant(app.settings) } }
 
     func refresh() {
+        // A bare binary (CI's snapshots) has no Info.plist: macOS aborts privacy checks without one.
+        guard Bundle.main.bundleIdentifier != nil else { return }
         let fresh = !CGPreflightScreenCaptureAccess() && AppDelegate.permissionGrantedInFreshProcess()
         var s: [Permission: Permission.Status] = [:]
         for p in Permission.allCases { s[p] = p.status(freshScreenGrant: fresh) }
