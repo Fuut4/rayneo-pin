@@ -292,6 +292,7 @@ struct SettingsView: View {
             } footer: {
                 Text("Telemetry only exists to find and fix drift and tracking glitches. It's off unless you turn it on, and Off stops it immediately.")
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             Section("Your recordings") {
                 Row(title: "On this Mac", detail: "~/Library/Logs/RayNeoPin, one folder per session (the last 8 are kept). Export zips the current session onto the Desktop.") {

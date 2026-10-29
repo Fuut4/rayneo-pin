@@ -120,6 +120,7 @@ struct ConsentView: View {
         .padding(24)
         .padding(.top, 8)
         .frame(width: 560)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
