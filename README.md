@@ -2,6 +2,7 @@
 
 Head-tracked (3DoF) screen pinning for **RayNeo Air 4 Pro** on macOS: a native menu-bar app over one USB-C cable, with no drivers or dependencies.
 
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-fuut4-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/fuut4)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ## Requirements
@@ -19,11 +20,9 @@ curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | 
 
 Clones to `~/Library/Application Support/RayNeoPin/src`, builds, installs to `/Applications`, launches. Re-running is a no-op when up to date; `--force` rebuilds.
 
-| | |
-|---|---|
-| Updates | **Check for Updates…** downloads, builds, installs and relaunches, with progress. |
-| Channels | **Release** tracks `main`; **Developer** tracks `develop`. Switch under **Update Channel**. |
-| Signing | `build.sh` signs with the first *Apple Development* identity, so Screen Recording access survives updates. Ad-hoc builds lose it on every rebuild. |
+- **Updates:** **Check for Updates…** downloads, builds, installs and relaunches, with progress.
+- **Channels:** **Release** tracks `main`, **Developer** tracks `develop`. Switch under **Update Channel**.
+- **Signing:** `build.sh` signs with the first *Apple Development* identity, so Screen Recording access survives updates. Ad-hoc builds lose it on every rebuild.
 
 **First run:** grant **Screen & System Audio Recording** (the app relaunches itself once granted), hold still for one second, and optionally run **Calibrate Gyro (glasses on a table)…**.
 
@@ -71,7 +70,7 @@ Clones to `~/Library/Application Support/RayNeoPin/src`, builds, installs to `/A
 
 ## Calibration
 
-| | |
+| Calibration | How |
 |---|---|
 | **Gyro** | Glasses on a table, ~3 s of stillness. The proximity sensor is disabled meanwhile so the IMU keeps streaming. Result persisted; refined at every rest. |
 | **Turn sensitivity** | ⌃⌥G, one full turn back to the same point, ⌃⌥G. Rejected if the turn wasn't whole. |
@@ -172,7 +171,7 @@ Open work: magnetometer fusion, a notarized release, support for other RayNeo mo
 
 ## Support
 
-[Buy Me a Coffee](https://buymeacoffee.com/fuut4).
+Claude writes the code; Fuut4 pays for the tokens. [Buy Fuut4 a coffee](https://buymeacoffee.com/fuut4) so Claude keeps its job.
 
 ## License
 
