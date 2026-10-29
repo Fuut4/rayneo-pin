@@ -186,6 +186,10 @@ struct AirPodsCalibration {
     private var sweepRef: (yaw: Double, pitch: Double)?
     private var yawRange = (lo: 0.0, hi: 0.0)
     private var pitchRange = (lo: 0.0, hi: 0.0)
+    private var airPodsRef: simd_quatd?
+    /// Each side of the guided movement, 0…1, filled only as far as both the glasses and the
+    /// AirPods agree the head turned that way.
+    private(set) var left = 0.0, right = 0.0, up = 0.0, down = 0.0
     /// Calibration per earbud, since motion comes from one bud at a time and they sit mirrored.
     private var xByBud: [Int: simd_quatd] = [:]
     private var bud = 0
@@ -273,8 +277,8 @@ struct AirPodsCalibration {
     var hint: String {
         switch phase {
         // Yaw grows to the left (counterclockwise seen from above), so the left side is the high end.
-        case .turn: return yawRange.hi < AirPodsCalibration.sweepYaw ? "step 1 of 2: turn your head to the LEFT" : "step 1 of 2: now to the RIGHT"
-        case .nod: return pitchRange.hi < AirPodsCalibration.sweepPitch ? "step 2 of 2: look UP" : "step 2 of 2: now look DOWN"
+        case .turn: return left < 1 ? "step 1 of 2: turn your head to the LEFT" : "step 1 of 2: now to the RIGHT"
+        case .nod: return up < 1 ? "step 2 of 2: look UP" : "step 2 of 2: now look DOWN"
         case .finishing: return fitError >= 0.4 && pairCount >= AirPodsCalibration.neededPairs
             ? "once more, a bit slower: left, right, up, down" : "checking against the glasses — keep moving gently"
         case .done: return ""
@@ -333,7 +337,7 @@ struct AirPodsCalibration {
             }
 
             guard let g = glasses(glassesTime(s)) else { continue }
-            trackSweeps(g.q)
+            trackSweeps(g.q, airPods: s.q)
             // Once X is known both devices must agree. A single disagreement is a glitch; most recent
             // ones disagreeing means the AirPods were reseated in the ears: X changed, learn it again.
             // Only checked against a finished calibration: an early, rough X would make good samples
@@ -443,17 +447,37 @@ struct AirPodsCalibration {
         peak = max(peak, min(rawProgress, 0.99))
     }
 
+    /// Starts the guided movement over from where the head points now (recenter).
+    mutating func restartSweeps() {
+        guard phase == .turn || phase == .nod else { return }
+        sweepRef = nil
+        airPodsRef = nil
+        yawRange = (0, 0)
+        pitchRange = (0, 0)
+        if phase == .turn { left = 0; right = 0; turned = 0 } else { up = 0; down = 0; nodded = 0 }
+    }
+
     /// Follows the glasses through the guided movement: the turn counts once the head has been 20°
     /// to each side of where it started, the nod once it has been 12° up and down.
-    private mutating func trackSweeps(_ q: simd_quatd) {
+    private mutating func trackSweeps(_ q: simd_quatd, airPods: simd_quatd) {
         guard phase == .turn || phase == .nod else { return }
         let yp = q.yawPitch
-        guard let ref = sweepRef else { sweepRef = (yp.yaw, yp.pitch); return }
+        guard let ref = sweepRef, let apRef = airPodsRef else { sweepRef = (yp.yaw, yp.pitch); airPodsRef = airPods; return }
+        // Glasses: signed yaw (left is +) and pitch (up is +) from where it started. AirPods: how far
+        // they rotated, whatever their tilt in the ears. A side only fills as far as both agree.
         let dy = wrapAngle(yp.yaw - ref.yaw), dp = yp.pitch - ref.pitch
+        let ap = shortestAngle(apRef, airPods)
         yawRange = (min(yawRange.lo, dy), max(yawRange.hi, dy))
         pitchRange = (min(pitchRange.lo, dp), max(pitchRange.hi, dp))
-        turned = (min(-yawRange.lo / AirPodsCalibration.sweepYaw, 1) + min(yawRange.hi / AirPodsCalibration.sweepYaw, 1)) / 2
-        nodded = (min(-pitchRange.lo / AirPodsCalibration.sweepPitch, 1) + min(pitchRange.hi / AirPodsCalibration.sweepPitch, 1)) / 2
+        if phase == .turn {
+            let both = min(abs(dy), ap) / AirPodsCalibration.sweepYaw
+            if dy > 0 { left = max(left, min(both, 1)) } else { right = max(right, min(both, 1)) }
+        } else {
+            let both = min(abs(dp), ap) / AirPodsCalibration.sweepPitch
+            if dp > 0 { up = max(up, min(both, 1)) } else { down = max(down, min(both, 1)) }
+        }
+        turned = (left + right) / 2
+        nodded = (up + down) / 2
         if phase == .turn, turned >= 1 { phase = .nod }
         if phase == .nod, nodded >= 1 { phase = .finishing }
         peak = max(peak, min(rawProgress, 0.99))

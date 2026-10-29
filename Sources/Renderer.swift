@@ -659,6 +659,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         var progress = 0.0, turned = 0.0, nodded = 0.0, lag = 0.0, fitError = 1.0
         var glitches = 0
         var hint = ""
+        var phase = AirPodsCalibration.Phase.turn
+        var left = 0.0, right = 0.0, up = 0.0, down = 0.0
     }
     private var airPodsStatusValue = AirPodsStatus()
     var airPodsStatus: AirPodsStatus {
@@ -879,11 +881,23 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             lastPhase = calibration.phase
         }
         if calibrating {
-            let filled = Int((calibration.progress * 20).rounded())
-            let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
-            let hint = CACurrentMediaTime() - calibration.lastPairTime > 1.5 && !calibration.fitting
-                ? calibration.hint + " — a bit faster" : calibration.hint
-            airPodsNote = "Calibrating AirPods  \(bar)  \(Int(calibration.progress * 100))%  — \(hint)"
+            // One bar, filling outward from the center: left/right in step 1, up/down in step 2.
+            func half(_ f: Double, towardCenter: Bool) -> String {
+                let n = 10, k = Int((min(max(f, 0), 1) * Double(n)).rounded())
+                let cells = (0..<n).map { i in (towardCenter ? n - 1 - i : i) < k ? "▰" : "▱" }
+                return cells.joined()
+            }
+            let pct = Int(calibration.progress * 100)
+            switch calibration.phase {
+            case .turn:
+                airPodsNote = "AirPods 1/2   LEFT ◀ \(half(calibration.left, towardCenter: true))┃\(half(calibration.right, towardCenter: false)) ▶ RIGHT   \(pct)%   \(calibration.left < 1 ? "turn left" : "now right")"
+            case .nod:
+                airPodsNote = "AirPods 2/2   UP ▲ \(half(calibration.up, towardCenter: true))┃\(half(calibration.down, towardCenter: false)) ▼ DOWN   \(pct)%   \(calibration.up < 1 ? "look up" : "now look down")"
+            case .finishing, .done:
+                let filled = Int((calibration.progress * 20).rounded())
+                let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
+                airPodsNote = "AirPods   \(bar)   \(pct)%  — \(calibration.hint)"
+            }
         } else {
             airPodsNote = p.tracking == .glasses || airpods != nil || airPodsWasDisturbed ? "" : "AirPods: no data — using glasses"
         }
@@ -908,7 +922,9 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         if p.tracking != .glasses {
             let st = AirPodsStatus(receiving: airpods != nil, ready: calibration.ready, active: usingAirPods, progress: calibration.progress,
                                    turned: calibration.turned, nodded: calibration.nodded, lag: calibration.lag,
-                                   fitError: calibration.fitError, glitches: calibration.glitches, hint: calibration.hint)
+                                   fitError: calibration.fitError, glitches: calibration.glitches, hint: calibration.hint,
+                                   phase: calibration.phase, left: calibration.left, right: calibration.right,
+                                   up: calibration.up, down: calibration.down)
             lock.lock(); airPodsStatusValue = st; lock.unlock()
         }
 
@@ -930,6 +946,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             // stop (the screen overshoots, then snaps back): predict with whichever rate is slower.
             let predictRate = simd_length(omega) < simd_length(omegaLP) ? omega : omegaLP
             if recenterNow, p.telemetry { Telemetry.shared.event("recenter", time: frameStart) }
+            if recenterNow { calibration.restartSweeps() } // the guided turn starts again from here
             if recenterNow || !hasPose {
                 let yp = pose.yawPitch
                 anchor = .yawPitch(yp.yaw, p.lockPitch ? 0 : yp.pitch)

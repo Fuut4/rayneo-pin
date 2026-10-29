@@ -99,6 +99,43 @@ struct KeyCap: View {
     }
 }
 
+/// A bar that fills outward from its center: the left half toward the left, the right half toward
+/// the right (the guided AirPods calibration: turn left/right, look up/down).
+struct CenterBar: View {
+    let title: String, leftLabel: String, rightLabel: String
+    let left: Double, right: Double
+    let active: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("\(title): \(leftLabel.lowercased()), then \(rightLabel.lowercased())").font(.caption.weight(active ? .semibold : .regular))
+                Spacer()
+                Text("\(Int(((left + right) / 2 * 100).rounded()))%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                Text(leftLabel).font(.caption2).foregroundStyle(.secondary).frame(width: 34, alignment: .trailing)
+                GeometryReader { g in
+                    let half = g.size.width / 2
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.quaternary)
+                        Capsule().fill(left >= 1 ? Color.green : Color.accentColor)
+                            .frame(width: half * min(max(left, 0), 1))
+                            .offset(x: half * (1 - min(max(left, 0), 1)))
+                        Capsule().fill(right >= 1 ? Color.green : Color.accentColor)
+                            .frame(width: half * min(max(right, 0), 1))
+                            .offset(x: half)
+                        Rectangle().fill(.secondary).frame(width: 2).offset(x: half - 1)
+                    }
+                }
+                .frame(height: 8)
+                Text(rightLabel).font(.caption2).foregroundStyle(.secondary).frame(width: 34, alignment: .leading)
+            }
+        }
+        .opacity(active || left + right > 0 ? 1 : 0.5)
+    }
+}
+
 /// A toggle row with an explanation.
 struct ToggleRow: View {
     let title: String
@@ -360,10 +397,10 @@ struct SettingsView: View {
                                     .font(.headline)
                             }
                             ProgressView(value: st.progress) { Text("Overall") }
-                            HStack(spacing: 16) {
-                                ProgressView(value: st.turned) { Text("Step 1: turn left, then right").font(.caption) }
-                                ProgressView(value: st.nodded) { Text("Step 2: look up, then down").font(.caption) }
-                            }
+                            CenterBar(title: "Step 1", leftLabel: "Left", rightLabel: "Right", left: st.left, right: st.right,
+                                      active: st.phase == .turn)
+                            CenterBar(title: "Step 2", leftLabel: "Up", rightLabel: "Down", left: st.up, right: st.down,
+                                      active: st.phase == .nod)
                             Text(String(format: "Bluetooth delay %.0f ms · fit error %.0f%% · glitches skipped %d", st.lag * 1000, st.fitError * 100, st.glitches))
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
