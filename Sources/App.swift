@@ -218,7 +218,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 NSSound(named: "Pop")?.play()
                 Telemetry.shared.event("double tap", time: CACurrentMediaTime())
                 self.renderer?.recenter()
-                self.renderer?.show("Recentered (double tap)", seconds: 1)
+                self.renderer?.show("Recentered", seconds: 1, icon: "scope", tone: .success)
             }
         }
         imu.onConnect = { [weak self] in
@@ -262,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                                object: nil, queue: .main) { [weak self] _ in self?.screensChanged() }
         capture.onError = { [weak self] msg in
             NSLog("%@", msg)
-            if CGPreflightScreenCaptureAccess() { self?.renderer?.show(msg, seconds: 8) } else { self?.permissionMissing() }
+            if CGPreflightScreenCaptureAccess() { self?.renderer?.showCard(OverlayState(tone: .warning, icon: "exclamationmark.triangle.fill", title: "Screen capture problem", message: msg), seconds: 8) } else { self?.permissionMissing() }
         }
         capture.ownWindowIDs = {
             let ids = { NSApp.windows.map { CGWindowID($0.windowNumber) } }
@@ -339,7 +339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func createMonitor() {
         monitor = VirtualMonitor()
         guard let monitor else {
-            renderer?.show("Could not create the virtual display", seconds: 6)
+            renderer?.show("Couldn't create the virtual display", seconds: 6, icon: "exclamationmark.triangle.fill", tone: .warning)
             return
         }
         source = .display(monitor.displayID)
@@ -400,9 +400,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                        askPermission: !askedAccessibility)
         if result.needsPermission, !askedAccessibility {
             askedAccessibility = true
-            renderer?.show("A window is stuck on the glasses' hidden display. Allow RayNeoPin in System Settings › Privacy & Security › Accessibility to move it out automatically.", seconds: 8)
+            renderer?.showCard(OverlayState(tone: .warning, icon: "macwindow", title: "A window is on the hidden glasses display",
+                                            message: "Allow RayNeoPin in System Settings › Privacy & Security › Accessibility to move it back automatically."), seconds: 8)
         }
-        if result.moved > 0 { renderer?.show("Moved \(result.moved) window\(result.moved == 1 ? "" : "s") off the glasses' hidden display", seconds: 3) }
+        if result.moved > 0 { renderer?.show("Moved \(result.moved) window\(result.moved == 1 ? "" : "s") back to your screen", seconds: 3, icon: "macwindow", tone: .success) }
     }
 
     /// WindowServer's cursor seed changes only when the cursor's shape changes. macOS hands out a
@@ -742,7 +743,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func flip(_ key: String, _ title: String) {
         setFlag(key, !settings.flag(key))
-        renderer?.show("\(title): \(settings.flag(key) ? "on" : "off")", seconds: 2)
+        renderer?.show("\(title) \(settings.flag(key) ? "on" : "off")", seconds: 2, icon: settings.flag(key) ? "checkmark.circle.fill" : "circle", tone: .info)
     }
 
     func setFlag(_ key: String, _ on: Bool) {
@@ -818,11 +819,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func exportTelemetry() {
-        renderer?.show("Exporting the telemetry session…", seconds: 3)
+        renderer?.show("Exporting the telemetry session…", seconds: 3, icon: "square.and.arrow.up")
         Telemetry.shared.export { [weak self] url in
-            guard let url else { self?.renderer?.show("No telemetry session to export", seconds: 3); return }
+            guard let url else { self?.renderer?.show("No telemetry session to export", seconds: 3, icon: "exclamationmark.triangle.fill", tone: .warning); return }
             NSWorkspace.shared.activateFileViewerSelecting([url])
-            self?.renderer?.show("Telemetry exported to the Desktop", seconds: 3)
+            self?.renderer?.show("Telemetry exported to the Desktop", seconds: 3, icon: "square.and.arrow.up", tone: .success)
         }
     }
 
@@ -868,7 +869,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             applyResolution()
         }
-        renderer?.show("Crisp Retina: macOS draws the desktop at 2×", seconds: 3)
+        renderer?.show("Crisp Retina: the desktop is drawn at 2×", seconds: 3, icon: "display", tone: .success)
     }
 
     @objc func presetDesk() { applyPreset("desk") }
@@ -885,8 +886,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.lockRoll = name != "desk"
         applyExtras()
         renderer?.recenter()
-        renderer?.show(["desk": "Desk: screen fixed in space", "sofa": "Sofa: screen follows you, no tilt",
-                        "lying": "Lying down: screen follows you, level"][name] ?? name, seconds: 2)
+        renderer?.showCard(OverlayState(tone: .success, icon: "pin.fill", title: ["desk": "Desk", "sofa": "Sofa", "lying": "Lying down"][name] ?? name,
+                                        message: ["desk": "The screen stays fixed in space.", "sofa": "The screen follows you, kept level.",
+                                                  "lying": "The screen follows you and stays level at any angle."][name]), seconds: 2)
     }
 
     @objc func heightUp() { height(2) }
@@ -896,7 +898,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func height(_ delta: Double) {
         settings.screenPitch = min(30, max(-30, settings.screenPitch + delta))
         applyExtras()
-        renderer?.show(String(format: "Screen height %+.0f°", settings.screenPitch), seconds: 1)
+        renderer?.show(String(format: "Screen height %+.0f°", settings.screenPitch), seconds: 1, icon: "arrow.up.and.down")
     }
 
     /// Full-circle turn: face something, start, turn around once (or more), face it again, finish.
@@ -905,15 +907,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let start = yawScaleStart else {
             yawScaleStart = imu.turned
             NSSound(named: "Tink")?.play()
-            renderer?.show("Look at something you can find again. Turn around once (360°, either way), look at it again, then press ⌃⌥G", seconds: 15)
+            Telemetry.shared.event("turn calibration started", time: CACurrentMediaTime())
+            // Live card: how far you've turned so far.
+            yawScaleTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                guard let self, let start = self.yawScaleStart else { return }
+                let turned = abs(degrees(self.imu.turned - start))
+                self.renderer?.showCard(OverlayState(tone: .progress, icon: "arrow.triangle.2.circlepath", title: "Calibrating turn sensitivity",
+                                                     step: turned < 300 ? "Step 1 of 2" : "Step 2 of 2",
+                                                     message: turned < 300 ? "Turn around once, either way, until you face the same point again."
+                                                                           : "Face the starting point and press ⌃⌥G.",
+                                                     bar: .linear(min(turned / 360, 1)), detail: String(format: "%.0f°", turned)), seconds: 1)
+            }
             return
         }
+        yawScaleTimer?.invalidate()
+        yawScaleTimer = nil
         yawScaleStart = nil
         let turned = abs(imu.turned - start)
         let turns = (turned / (2 * .pi)).rounded()
         guard turns >= 1, abs(turned - turns * 2 * .pi) < 20 * .pi / 180 else {
             NSSound(named: "Basso")?.play()
-            renderer?.show(String(format: "That was %.0f° — not a whole turn. Nothing changed.", degrees(turned)), seconds: 5)
+            renderer?.showCard(OverlayState(tone: .warning, icon: "exclamationmark.triangle.fill", title: "Not a full turn",
+                                            message: String(format: "Measured %.0f°. Nothing was changed; press ⌃⌥G to try again.", degrees(turned))),
+                               seconds: 5)
             return
         }
         let factor = turns * 2 * .pi / turned
@@ -922,19 +938,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         imu.scale = s
         settings.gyroScale = imu.scale
         NSSound(named: "Glass")?.play()
-        renderer?.show(String(format: "Measured %.1f° for %.0f×360° — turn sensitivity ×%.4f", degrees(turned), turns, factor), seconds: 6)
+        Telemetry.shared.event("turn calibration done", details: String(format: "measured %.2f° for %.0f turns, factor %.5f", degrees(turned), turns, factor),
+                               time: CACurrentMediaTime())
+        renderer?.showCard(OverlayState(tone: .success, icon: "checkmark.circle.fill", title: "Turn sensitivity calibrated",
+                                        message: String(format: "Measured %.1f° for %.0f × 360°: correction ×%.4f.", degrees(turned), turns, factor),
+                                        bar: .linear(1)), seconds: 5)
     }
+
+    var yawScaleTimer: Timer?
 
     @objc func resetScale() {
         imu.scale = SIMD3(repeating: 1)
         settings.gyroScale = imu.scale
-        renderer?.show("Gyro sensitivity reset", seconds: 2)
+        renderer?.show("Gyro sensitivity reset", seconds: 2, icon: "arrow.counterclockwise", tone: .success)
     }
 
     @objc func resetTemperature() {
         imu.temperatureModel = TemperatureModel()
         settings.temperatureModel = nil
-        renderer?.show("Temperature model cleared", seconds: 2)
+        renderer?.show("Temperature model cleared", seconds: 2, icon: "arrow.counterclockwise", tone: .success)
     }
 
     /// Sends 0x3E, which the RayNeo SDK names "read gyro bias", and nothing that writes. The raw
@@ -942,15 +964,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func probeCalibration() {
         imu.send(raw: 0x3E)
         if !settings.developer { toggleDeveloper() }
-        renderer?.show("Sent read-only query 0x3E — the reply is under GLASSES IMU › last ack", seconds: 5)
+        renderer?.showCard(OverlayState(icon: "antenna.radiowaves.left.and.right", title: "Query sent to the glasses",
+                                        message: "The reply appears in Developer Mode under Glasses IMU › last ack."), seconds: 5)
     }
 
     @objc func toggleLogin() {
         do {
             if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() } else { try SMAppService.mainApp.register() }
-            renderer?.show(SMAppService.mainApp.status == .enabled ? "RayNeoPin opens at login" : "RayNeoPin won't open at login", seconds: 2)
+            renderer?.show(SMAppService.mainApp.status == .enabled ? "RayNeoPin opens at login" : "RayNeoPin won't open at login", seconds: 2, icon: "power")
         } catch {
-            renderer?.show("Open at Login failed: \(error.localizedDescription)", seconds: 5)
+            renderer?.showCard(OverlayState(tone: .warning, icon: "exclamationmark.triangle.fill", title: "Couldn't change Open at Login",
+                                            message: error.localizedDescription), seconds: 5)
         }
     }
 
@@ -1054,10 +1078,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.show(message)
     }
 
-    @objc func recenter() { renderer?.recenter(); renderer?.show("Recentered", seconds: 1) }
+    @objc func recenter() { renderer?.recenter(); renderer?.show("Recentered", seconds: 1, icon: "scope", tone: .success) }
 
     var calibrationTimer: Timer?
-    var calibrationPanel: NSPanel?
 
     /// Table calibration. The glasses' proximity sensor turns them off when not worn, so it is
     /// disabled meanwhile; progress is shown on the Mac and signalled with sounds, since nobody is
@@ -1068,7 +1091,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         imu.send(.proximitySensor, value: 0)
         imu.calibrateOnTable()
         NSSound(named: "Tink")?.play()
-        showCalibrationStatus("Put the glasses on a flat surface and don't touch them…")
+        let card = { (progress: Double) in
+            OverlayState(tone: .progress, icon: "gyroscope", title: "Calibrating the gyroscope", step: "Hold still",
+                         message: "Put the glasses on a flat surface and don't touch them.", bar: .linear(progress),
+                         detail: "\(Int(progress * 100))%")
+        }
+        macCard.show(card(0))
         let started = Date()
         calibrationTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -1076,56 +1104,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .calibratingOnTable(let progress):
                 if Date().timeIntervalSince(started) > 90 {
                     self.imu.cancelCalibration()
-                    self.finishCalibration("Calibration failed: the glasses kept moving. The previous calibration is kept.", ok: false)
-                } else if progress > 0 {
-                    self.showCalibrationStatus(String(format: "Calibrating gyro… %.0f%%", progress * 100))
+                    self.finishCalibration(ok: false, detail: "The glasses kept moving. The previous calibration is kept.")
+                } else {
+                    self.macCard.show(card(progress))
                 }
             default:
                 let b = self.imu.bias * 180 / .pi
-                self.finishCalibration(String(format: "Calibration done. Gyro bias %+.3f %+.3f %+.3f °/s", b.x, b.y, b.z), ok: true)
+                self.finishCalibration(ok: true, detail: String(format: "Gyro bias %+.3f, %+.3f, %+.3f °/s", b.x, b.y, b.z))
             }
         }
     }
 
-    func finishCalibration(_ message: String, ok: Bool) {
-        Telemetry.shared.event("table calibration: " + message, time: CACurrentMediaTime())
+    func finishCalibration(ok: Bool, detail: String) {
+        Telemetry.shared.event(ok ? "table calibration done" : "table calibration failed", details: detail, time: CACurrentMediaTime())
         calibrationTimer?.invalidate()
         calibrationTimer = nil
         imu.send(.proximitySensor, value: 1)
         if ok { saveBias() }
         NSSound(named: ok ? "Glass" : "Basso")?.play()
-        showCalibrationStatus(message)
-        renderer?.show(message, seconds: 5)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            if self?.calibrationTimer == nil { self?.calibrationPanel?.orderOut(nil) }
-        }
+        let state = OverlayState(tone: ok ? .success : .warning, icon: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                                 title: ok ? "Gyroscope calibrated" : "Calibration didn't finish", message: detail,
+                                 bar: ok ? .linear(1) : .none)
+        macCard.show(state, hideAfter: 5)
+        renderer?.showCard(state, seconds: 5)
     }
 
-    /// Small HUD on the Mac's own screen, top center.
-    func showCalibrationStatus(_ text: String, title: String = "RayNeoPin Calibration") {
-        if calibrationPanel == nil {
-            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 64),
-                                styleMask: [.titled, .hudWindow, .utilityWindow, .nonactivatingPanel], backing: .buffered, defer: false)
-            panel.title = "RayNeoPin Calibration"
-            panel.level = .floating
-            panel.isReleasedWhenClosed = false
-            let label = NSTextField(labelWithString: "")
-            label.font = .systemFont(ofSize: 13, weight: .medium)
-            label.alignment = .center
-            label.frame = panel.contentView!.bounds.insetBy(dx: 12, dy: 12)
-            label.autoresizingMask = [.width, .height]
-            panel.contentView!.addSubview(label)
-            calibrationPanel = panel
-        }
-        guard let panel = calibrationPanel, let label = panel.contentView?.subviews.first as? NSTextField else { return }
-        panel.title = title
-        label.stringValue = text
-        if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main {
-            let f = screen.visibleFrame
-            panel.setFrameTopLeftPoint(NSPoint(x: f.midX - 260, y: f.maxY - 10))
-        }
-        panel.orderFrontRegardless()
-    }
+    /// The message card on the Mac's own screen (same design as in the glasses).
+    let macCard = MacCard()
 
     @objc func togglePause() {
         guard let r = renderer else { return }
@@ -1169,18 +1174,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func recalibrateAirPods() {
         Telemetry.shared.event("airpods recalibration requested", time: CACurrentMediaTime())
         renderer?.recalibrateAirPods()
-        renderer?.show("Recalibrating AirPods — turn your head left/right and nod a few times", seconds: 4)
+        renderer?.show("Recalibrating AirPods", seconds: 1.5, icon: "airpodspro", tone: .progress)
     }
 
     @objc func pickHeadphones(_ sender: NSMenuItem) {
         guard let address = sender.representedObject as? String,
               let device = pairedHeadphones.first(where: { $0.address == address }) else { return }
-        renderer?.show("Connecting \(device.name)…", seconds: 10)
+        renderer?.show("Connecting \(device.name)…", seconds: 10, icon: "airpodspro", tone: .progress)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let ok = HeadphoneCatalog.use(device)
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.renderer?.show(ok ? "Using \(device.name) for sound and head tracking" : "Couldn't connect \(device.name) — is it nearby and out of its case?", seconds: 4)
+                self.renderer?.show(ok ? "Using \(device.name) for sound and head tracking" : "Couldn't connect \(device.name). Is it nearby and out of its case?", seconds: 4,
+                                     icon: "airpodspro", tone: ok ? .success : .warning)
                 if ok, self.settings.tracking == .glasses {
                     self.settings.tracking = .both
                     self.renderer?.update { self.settings.apply(to: &$0) }
@@ -1262,7 +1268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.highRefresh.toggle()
         imu.send(settings.highRefresh ? .panel120Hz : .panel60Hz)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.applyRefreshRate() }
-        renderer?.show(settings.highRefresh ? "Glasses at 120 Hz" : "Glasses at 60 Hz")
+        renderer?.show(settings.highRefresh ? "Glasses at 120 Hz" : "Glasses at 60 Hz", icon: "speedometer")
     }
 
     @objc func zoomIn() { zoom(1.1) }
@@ -1275,7 +1281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.zoom = min(2.4, max(0.6, settings.zoom * k))
         let z = settings.zoom
         renderer?.update { $0.zoom = z }
-        renderer?.show(String(format: "Zoom %.0f%%", z * 100), seconds: 1)
+        renderer?.show(String(format: "Zoom %.0f%%", z * 100), seconds: 1, icon: "plus.magnifyingglass")
         if settings.resolution == .crisp || settings.resolution == .crispRetina { applyResolutionSoon() }
     }
 
@@ -1283,7 +1289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.fovDiagonal = min(70, max(25, settings.fovDiagonal + delta))
         let f = settings.fovDiagonal
         renderer?.update { $0.fovDiagonal = f }
-        renderer?.show(String(format: "FOV %.0f°", f), seconds: 1)
+        renderer?.show(String(format: "Field of view %.0f°", f), seconds: 1, icon: "viewfinder")
     }
 
     @objc func coffee() { NSWorkspace.shared.open(AppDelegate.coffeeURL) }
@@ -1293,11 +1299,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let script = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/RayNeoPin/src/install.sh").path
         guard FileManager.default.fileExists(atPath: script) else {
-            renderer?.show("Install with install.sh to update from the menu", seconds: 5)
+            renderer?.showCard(OverlayState(tone: .warning, icon: "exclamationmark.triangle.fill", title: "Updates need the installer",
+                                            message: "Install RayNeoPin with install.sh to update from the menu."), seconds: 5)
             return
         }
-        guard updateProcess == nil else { updatePanel?.orderFrontRegardless(); return }
-        renderer?.show("Checking for updates…", seconds: 3)
+        guard updateProcess == nil else { return }
+        renderer?.show("Checking for updates…", seconds: 3, icon: "arrow.down.circle.fill", tone: .progress)
         updateProgress(step: 0, of: 4, "Checking for updates…")
         let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/RayNeoPin-update.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
@@ -1317,7 +1324,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard fraction.count == 2, parts.count == 2 else { return }
             let seconds = Int(Date().timeIntervalSince(started))
             self.updateProgress(step: fraction[0], of: fraction[1], String(parts[1]), detail: "\(seconds) s")
-            self.renderer?.show("Updating: " + String(parts[1]), seconds: 2)
+            self.renderer?.showCard(OverlayState(tone: .progress, icon: "arrow.down.circle.fill", title: "Updating RayNeoPin",
+                                                     step: "Step \(fraction[0]) of \(fraction[1])", message: String(parts[1]),
+                                                     detail: "\(seconds) s"), seconds: 2)
         }
         // The script builds and installs a new version, then this app restarts into it.
         p.terminationHandler = { [weak self] p in
@@ -1338,11 +1347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else {
                     self.updateProgress(step: 4, of: 4, message, finished: true, failed: p.terminationStatus != 0)
                 }
-                if installed {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.relaunch() }
-                } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 6) { self.updatePanel?.orderOut(nil) }
-                }
+                if installed { DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.relaunch() } }
             }
         }
         updateProcess = p
@@ -1356,57 +1361,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var updateProcess: Process?
     var updateTimer: Timer?
-    var updatePanel: NSPanel?
-    private var updateLabel: NSTextField?
-    private var updateDetail: NSTextField?
-    private var updateBar: NSProgressIndicator?
+    /// The update's steps on the Mac (the glasses may not be on): download, build, install, restart.
+    func updateProgress(step: Int, of total: Int, _ text: String, detail: String = "", finished: Bool = false, failed: Bool = false) {
+        if step != updateStep { updateStep = step; updateStepStart = Date() }
+        // Each step fills its share over its usual duration, so the bar keeps moving during the build.
+        let durations: [Int: Double] = [0: 4, 1: 5, 2: 60, 3: 3, 4: 2]
+        let within = min(Date().timeIntervalSince(updateStepStart) / (durations[step] ?? 5), 0.95)
+        let value = finished ? 1 : failed ? 0 : (Double(max(step - 1, 0)) + (step == 0 ? 0.1 : within)) / Double(total)
+        let state = OverlayState(tone: failed ? .warning : finished ? .success : .progress,
+                                 icon: failed ? "exclamationmark.triangle.fill" : finished ? "checkmark.circle.fill" : "arrow.down.circle.fill",
+                                 title: failed ? "Update failed" : finished ? text : "Updating RayNeoPin",
+                                 step: finished || failed || step == 0 ? nil : "Step \(step) of \(total)",
+                                 message: failed ? text : finished ? nil : text,
+                                 bar: failed ? .none : .linear(value), detail: detail.isEmpty ? nil : detail)
+        macCard.show(state, hideAfter: finished || failed ? 6 : nil)
+    }
 
     private var updateStep = -1
     private var updateStepStart = Date()
-
-    /// A small window at the top of the Mac's screen showing each update step (download, build,
-    /// install, restart) with a progress bar, since you might not be wearing the glasses.
-    func updateProgress(step: Int, of total: Int, _ text: String, detail: String = "", finished: Bool = false, failed: Bool = false) {
-        if updatePanel == nil {
-            let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 92),
-                                styleMask: [.titled, .closable, .hudWindow, .utilityWindow, .nonactivatingPanel],
-                                backing: .buffered, defer: false)
-            panel.title = "Updating RayNeoPin"
-            panel.level = .floating
-            panel.isReleasedWhenClosed = false
-            let label = NSTextField(labelWithString: "")
-            label.font = .systemFont(ofSize: 13, weight: .semibold)
-            label.lineBreakMode = .byTruncatingTail
-            label.frame = NSRect(x: 16, y: 54, width: 360, height: 20)
-            let detailLabel = NSTextField(labelWithString: "")
-            detailLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-            detailLabel.textColor = .secondaryLabelColor
-            detailLabel.alignment = .right
-            detailLabel.frame = NSRect(x: 376, y: 55, width: 48, height: 18)
-            let bar = NSProgressIndicator(frame: NSRect(x: 16, y: 22, width: 408, height: 16))
-            bar.style = .bar
-            bar.isIndeterminate = false
-            bar.minValue = 0
-            for v in [label, detailLabel, bar] { panel.contentView!.addSubview(v) }
-            updatePanel = panel
-            updateLabel = label
-            updateDetail = detailLabel
-            updateBar = bar
-        }
-        guard let panel = updatePanel else { return }
-        if step != updateStep { updateStep = step; updateStepStart = Date() }
-        updateLabel?.stringValue = failed ? "⚠️ " + text : finished || step == 0 ? text : "\(step)/\(total)  \(text)"
-        updateDetail?.stringValue = detail
-        updateBar?.maxValue = Double(total)
-        // Each step fills its share over its usual duration, so the bar keeps moving during the build.
-        let durations: [Int: Double] = [0: 4, 1: 5, 2: 60, 3: 3, 4: 2]
-        let expected = durations[step] ?? 5
-        let within = min(Date().timeIntervalSince(updateStepStart) / expected, 0.95)
-        updateBar?.doubleValue = finished ? Double(total) : failed ? 0 : Double(max(step - 1, 0)) + (step == 0 ? 0.1 : within)
-        if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main, !panel.isVisible {
-            let f = screen.visibleFrame
-            panel.setFrameTopLeftPoint(NSPoint(x: f.midX - 220, y: f.maxY - 10))
-        }
-        panel.orderFrontRegardless()
-    }
 }

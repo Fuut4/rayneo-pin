@@ -12,6 +12,7 @@ import CoreVideo
 import Metal
 import QuartzCore
 import simd
+import SwiftUI
 
 enum TrackingMode: String, CaseIterable {
     case glasses, airpods, both
@@ -150,10 +151,10 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     let stereo: Bool
     let pacing: FramePacing
     private let metalLayer = CAMetalLayer()
-    private let hud = CATextLayer()
+    /// The message card (SwiftUI), one per eye.
+    private let overlay = OverlayModel()
     private let devLayer = CATextLayer()
     // Right-eye copies of the text layers in stereo mode.
-    private let hudRight = CATextLayer()
     private let devRight = CATextLayer()
     /// Developer overlay text, delivered on the main thread (~10 Hz) for the Mac-side panel.
     var onDeveloperText: ((String) -> Void)?
@@ -192,8 +193,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     private var airPodsResetRequested = false
     private var developerDisplayInfo = "" // built on the main thread (NSScreen isn't thread-safe)
     private var notice: String?
-    private var toast: (text: String, until: Date)?
-    private var shownHUD = ""
+    private var toast: (state: OverlayState, until: Date)?
+    private var shownOverlay: OverlayState?
     private var airPodsActive = false
     private var caret: CaretPoint?
     private var face: FaceTracker?
@@ -210,7 +211,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     private var steadyMoved = 0.0 // when steadyPose last changed
     private var heading = HeadingReference()
     private var calibration = AirPodsCalibration()
-    private var airPodsNote = "" // why AirPods aren't used right now, for the HUD
+    private var airPodsCard: OverlayState? // AirPods calibration, or why they aren't used right now
     private var airPodsCalibrating = false // for start/finish sounds
     private var airPodsAnnounced = false // sounds/toast only for the first calibration, never for refinements
     private var lastWVersion = 0
@@ -494,10 +495,15 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         // RAYNEOPIN_DEBUG=1 lets screenshots see the glasses window.
         window.sharingType = ProcessInfo.processInfo.environment["RAYNEOPIN_DEBUG"] == nil ? .none : .readOnly
 
-        let view = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        // Container: the Metal view (with the developer text) below, the message cards above.
+        let container = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        container.wantsLayer = true
+        container.layer!.backgroundColor = NSColor.black.cgColor
+        window.contentView = container
+        let view = NSView(frame: container.bounds)
         view.wantsLayer = true
         view.layer!.backgroundColor = NSColor.black.cgColor
-        window.contentView = view
+        container.addSubview(view)
 
         metalLayer.device = device
         metalLayer.pixelFormat = pixelFormat
@@ -510,14 +516,12 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         metalLayer.drawableSize = CGSize(width: view.bounds.width * scale, height: view.bounds.height * scale)
         view.layer!.addSublayer(metalLayer)
 
-        hud.fontSize = 24
-        hud.alignmentMode = .center
-        hud.foregroundColor = NSColor(white: 0.9, alpha: 1).cgColor
-        hud.contentsScale = scale
-        hud.isWrapped = true
         let eyeWidth = stereo ? view.bounds.width / 2 : view.bounds.width
-        hud.frame = CGRect(x: 60, y: 40, width: eyeWidth - 120, height: 70)
-        view.layer!.addSublayer(hud)
+        for eye in 0..<(stereo ? 2 : 1) {
+            let host = NSHostingView(rootView: GlassesOverlay(model: overlay))
+            host.frame = CGRect(x: CGFloat(eye) * eyeWidth, y: 0, width: eyeWidth, height: view.bounds.height)
+            container.addSubview(host)
+        }
 
         devLayer.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .medium)
         devLayer.fontSize = 13
@@ -531,7 +535,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         if stereo { devLayer.frame = CGRect(x: 40, y: devLayer.frame.minY, width: eyeWidth - 80, height: 720) }
         view.layer!.addSublayer(devLayer)
         if stereo {
-            for (copy, original) in [(hudRight, hud), (devRight, devLayer)] {
+            for (copy, original) in [(devRight, devLayer)] {
                 copy.font = original.font
                 copy.fontSize = original.fontSize
                 copy.alignmentMode = original.alignmentMode
@@ -706,8 +710,18 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         lock.lock(); notice = text; lock.unlock()
     }
 
-    func show(_ text: String, seconds: Double = 2) {
-        lock.lock(); toast = (text, Date().addingTimeInterval(seconds)); lock.unlock()
+    /// A short confirmation or note, as a card.
+    func show(_ text: String, seconds: Double = 2, icon: String = "info.circle.fill", tone: OverlayState.Tone = .info) {
+        showCard(OverlayState(tone: tone, icon: icon, title: text), seconds: seconds)
+    }
+
+    /// Any card for a while (e.g. the turn-sensitivity calibration, driven from the app).
+    func showCard(_ state: OverlayState, seconds: Double) {
+        lock.lock(); toast = (state, Date().addingTimeInterval(seconds)); lock.unlock()
+    }
+
+    func hideCard() {
+        lock.lock(); toast = nil; lock.unlock()
     }
 
     // MARK: Render thread
@@ -775,7 +789,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         airPodsSaved = calibration.saved ?? airPodsSaved
         let notice = notice
         if let t = toast, t.until < Date() { toast = nil }
-        let toastText = toast?.text
+        let toastCard = toast?.state
         let caret = caret
         let face = face
         let cursorVersion = cursorVersion
@@ -803,7 +817,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         }
 
         let s = imu.snapshot()
-        updateHUD(notice ?? toastText ?? status(s, p))
+        updateOverlay(notice.map { OverlayState(tone: .warning, icon: "exclamationmark.triangle.fill", title: "Action needed", message: $0) }
+                      ?? toastCard ?? status(s, p))
 
         // Pose source: the glasses' IMU, the AirPods, or the glasses corrected by the AirPods' heading.
         var airpods: Headphones.Sample?
@@ -862,7 +877,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             } else if calibration.ready {
                 airPodsAnnounced = true
                 DispatchQueue.main.async { NSSound(named: "Glass")?.play() }
-                show("AirPods calibrated", seconds: 2)
+                show("AirPods calibrated", seconds: 2.5, icon: "airpodspro", tone: .success)
             }
         }
         airPodsCalibrating = calibrating
@@ -873,24 +888,29 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         }
         if calibrating {
             // One bar, filling outward from the center: left/right in step 1, up/down in step 2.
-            func half(_ f: Double, towardCenter: Bool) -> String {
-                let n = 10, k = Int((min(max(f, 0), 1) * Double(n)).rounded())
-                let cells = (0..<n).map { i in (towardCenter ? n - 1 - i : i) < k ? "▰" : "▱" }
-                return cells.joined()
-            }
-            let pct = Int(calibration.progress * 100)
+            let pct = "\(Int(calibration.progress * 100))%"
             switch calibration.phase {
             case .turn:
-                airPodsNote = "AirPods 1/2   LEFT ◀ \(half(calibration.left, towardCenter: true))┃\(half(calibration.right, towardCenter: false)) ▶ RIGHT   \(pct)%   \(calibration.left < 1 ? "turn left" : "now right")"
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 1 of 2",
+                                           message: calibration.left < 1 ? "Turn your head to the left." : "Now turn your head to the right.",
+                                           bar: .centered(left: calibration.left, right: calibration.right, leftLabel: "Left", rightLabel: "Right"),
+                                           detail: pct)
             case .nod:
-                airPodsNote = "AirPods 2/2   UP ▲ \(half(calibration.up, towardCenter: true))┃\(half(calibration.down, towardCenter: false)) ▼ DOWN   \(pct)%   \(calibration.up < 1 ? "look up" : "now look down")"
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 2 of 2",
+                                           message: calibration.up < 1 ? "Look up." : "Now look down.",
+                                           bar: .centered(left: calibration.up, right: calibration.down, leftLabel: "Up", rightLabel: "Down"),
+                                           detail: pct)
             case .finishing, .done:
-                let filled = Int((calibration.progress * 20).rounded())
-                let bar = String(repeating: "▰", count: filled) + String(repeating: "▱", count: 20 - filled)
-                airPodsNote = "AirPods   \(bar)   \(pct)%  — \(calibration.hint)"
+                let retry = calibration.fitError >= 0.4 && calibration.pairCount >= AirPodsCalibration.neededPairs
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Checking",
+                                           message: retry ? "Once more, a little slower: left, right, up, down."
+                                                          : "Comparing with the glasses. Keep moving gently.",
+                                           bar: .linear(calibration.progress), detail: pct)
             }
         } else {
-            airPodsNote = p.tracking == .glasses || airpods != nil || airPodsWasDisturbed ? "" : "AirPods: no data — using glasses"
+            airPodsCard = p.tracking == .glasses || airpods != nil || airPodsWasDisturbed ? nil
+                : OverlayState(tone: .info, icon: "airpodspro", title: "No AirPods motion data",
+                               message: "Tracking with the glasses only. Put your AirPods in to cancel drift.")
         }
 
         var pose: simd_quatd?
@@ -1427,26 +1447,27 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         }
     }
 
-    private func status(_ s: IMU.Snapshot, _ p: Params) -> String {
-        guard s.connected else { return "Glasses not detected (USB)" }
-        if !airPodsNote.isEmpty, s.state == .ready { return airPodsNote }
+    private func status(_ s: IMU.Snapshot, _ p: Params) -> OverlayState? {
+        guard s.connected else {
+            return OverlayState(tone: .warning, icon: "eyeglasses", title: "Glasses not connected", message: "Connect them with the USB-C cable.")
+        }
         switch s.state {
-        case .calibrating(let p): return "Calibrating… keep your head still (\(Int(p * 100))%)"
-        case .calibratingOnTable(let p): return "Calibrating… leave the glasses still on a table (\(Int(p * 100))%)"
-        case .ready: return ""
+        case .calibrating(let x):
+            return OverlayState(tone: .progress, icon: "eyeglasses", title: "Calibrating the glasses", message: "Keep your head still for a moment.",
+                                bar: .linear(x), detail: "\(Int(x * 100))%")
+        case .calibratingOnTable(let x):
+            return OverlayState(tone: .progress, icon: "gyroscope", title: "Calibrating the gyroscope",
+                                message: "Leave the glasses on a flat surface and don't touch them.", bar: .linear(x), detail: "\(Int(x * 100))%")
+        case .ready:
+            return airPodsCard
         }
     }
 
-    private func updateHUD(_ text: String) {
-        guard text != shownHUD else { return }
-        shownHUD = text
-        DispatchQueue.main.async {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            self.hud.string = text
-            self.hudRight.string = text
-            CATransaction.commit()
-        }
+    private func updateOverlay(_ state: OverlayState?) {
+        let q = state?.quantized()
+        guard q != shownOverlay else { return }
+        shownOverlay = q
+        DispatchQueue.main.async { self.overlay.state = q }
     }
 
     // MARK: Drawing
