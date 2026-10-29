@@ -720,6 +720,13 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         lock.lock(); toast = (state, Date().addingTimeInterval(seconds)); lock.unlock()
     }
 
+    private var airPodsProblem: (title: String, message: String)?
+
+    /// Why the AirPods send no motion (from the app's checks), shown instead of a generic note.
+    func setAirPodsProblem(_ p: (title: String, message: String)?) {
+        lock.lock(); airPodsProblem = p; lock.unlock()
+    }
+
     func hideCard() {
         lock.lock(); toast = nil; lock.unlock()
     }
@@ -908,9 +915,12 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                                            bar: .linear(calibration.progress), detail: pct)
             }
         } else {
+            lock.lock()
+            let problem = airPodsProblem
+            lock.unlock()
             airPodsCard = p.tracking == .glasses || airpods != nil || airPodsWasDisturbed ? nil
-                : OverlayState(tone: .info, icon: "airpodspro", title: "No AirPods motion data",
-                               message: "Tracking with the glasses only. Put your AirPods in to cancel drift.")
+                : OverlayState(tone: .warning, icon: "airpodspro", title: problem?.title ?? "Waiting for AirPods motion",
+                               message: problem?.message ?? "Keep both AirPods in your ears. Tracking with the glasses meanwhile.")
         }
 
         var pose: simd_quatd?

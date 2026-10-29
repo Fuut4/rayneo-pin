@@ -290,6 +290,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, let glasses = Displays.glasses() else { return }
             self.renderer?.keepOn(glasses)
+            if self.settings.tracking != .glasses {
+                self.headphones.keepAlive()
+                self.renderer?.setAirPodsProblem(self.headphones.problem(outputIsBluetooth: HeadphoneCatalog.currentOutputAddress() != nil))
+            }
             // Glasses taken off: stop capturing until they're worn again.
             let asleep = self.imu.isAsleep
             if asleep != self.wasAsleep {

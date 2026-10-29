@@ -121,6 +121,42 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
     func headphoneMotionManagerDidDisconnect(_ manager: CMHeadphoneMotionManager) {
         lock.lock(); last = nil; pending.removeAll(); lock.unlock()
     }
+
+    /// Seconds since the last sample (infinity if none yet).
+    var dataAge: Double {
+        lock.lock(); defer { lock.unlock() }
+        return last.map { CACurrentMediaTime() - $0.arrival } ?? .infinity
+    }
+
+    private var lastRestart = 0.0
+
+    /// Keeps asking for motion while it isn't arriving: macOS only delivers it once the AirPods
+    /// are connected and the sound output, which can happen long after launch. Called every second.
+    func keepAlive() {
+        guard dataAge > 3, CACurrentMediaTime() - lastRestart > 5 else { return }
+        lastRestart = CACurrentMediaTime()
+        stop()
+        start()
+    }
+
+    /// Why no motion is arriving, for the message card (nil while it arrives).
+    func problem(outputIsBluetooth: Bool) -> (title: String, message: String)? {
+        guard dataAge > 1 else { return nil }
+        switch CMHeadphoneMotionManager.authorizationStatus() {
+        case .denied, .restricted:
+            return ("Motion access is off", "Allow RayNeoPin in System Settings › Privacy & Security › Motion & Fitness.")
+        case .notDetermined:
+            return ("Allow motion access", "macOS asks the first time the AirPods send motion. Keep them in your ears.")
+        default: break
+        }
+        if !outputIsBluetooth {
+            return ("AirPods aren't the sound output", "Choose them in Control Center › Sound. Head tracking follows the sound output.")
+        }
+        if !isAvailable {
+            return ("These headphones have no head tracking", "Use AirPods Pro, AirPods 3 or 4, AirPods Max or Beats Fit Pro.")
+        }
+        return ("Waiting for AirPods motion", "Keep both AirPods in your ears. Tracking with the glasses meanwhile.")
+    }
 }
 
 func wrapAngle(_ a: Double) -> Double { atan2(sin(a), cos(a)) }

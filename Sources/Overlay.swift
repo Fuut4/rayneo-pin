@@ -58,12 +58,11 @@ struct OverlayCard: View {
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .center, spacing: 14) {
             Image(systemName: state.icon)
                 .font(.system(size: compact ? 20 : 26, weight: .semibold))
                 .foregroundStyle(accent)
                 .frame(width: compact ? 26 : 34)
-                .padding(.top, 1)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(state.title).font(.system(size: compact ? 15 : 19, weight: .semibold))
