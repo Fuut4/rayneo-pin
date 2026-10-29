@@ -406,7 +406,14 @@ struct PoseHistory {
 
     /// Interpolated pose at `t`, nil if `t` is outside the stored window.
     func pose(at t: Double) -> PoseSample? {
-        guard count > 1, t >= item(0).time, t <= item(count - 1).time else { return nil }
+        guard count > 1, t >= item(0).time else { return nil }
+        // A few ms past the newest sample: carried forward with its rate. An AirPods sample
+        // matched right as it arrives can ask for that, and used to be skipped.
+        let newest = item(count - 1)
+        if t > newest.time {
+            guard t - newest.time <= 0.025 else { return nil }
+            return PoseSample(time: t, q: newest.q.extrapolated(newest.omega, t - newest.time), omega: newest.omega)
+        }
         var lo = 0, hi = count - 1
         while hi - lo > 1 {
             let mid = (lo + hi) / 2
