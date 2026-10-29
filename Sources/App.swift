@@ -771,7 +771,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Pushes every setting to the renderer, the sensor fusion and the optional references.
     func applyExtras() {
         renderer?.update { settings.apply(to: &$0) }
-        if settings.flag("telemetry") { Telemetry.shared.start() } else { Telemetry.shared.stop() }
+        if settings.flag("telemetry") { Telemetry.shared.start(info: sessionInfo()) } else { Telemetry.shared.stop() }
         imu.configure(mode: settings.fusionMode, strictAccel: settings.flag("strictAccel"), temperature: settings.flag("temperatureComp"))
         if settings.flag("cameraDrift") {
             if face == nil {
@@ -787,6 +787,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if settings.flag("typingDrift"), !AXIsProcessTrusted() {
             let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(options)
+        }
+    }
+
+    /// Everything about the setup a telemetry session was recorded with.
+    func sessionInfo() -> [String: Any] {
+        var info: [String: Any] = [
+            "app": "RayNeoPin", "revision": SettingsView.revision,
+            "macos": ProcessInfo.processInfo.operatingSystemVersionString,
+            "model": { () -> String in
+                       var size = 0; sysctlbyname("hw.model", nil, &size, nil, 0)
+                       var b = [CChar](repeating: 0, count: max(size, 1)); sysctlbyname("hw.model", &b, &size, nil, 0)
+                       return String(cString: b) }(),
+            "displays": NSScreen.screens.map { s -> [String: Any] in
+                let id = Displays.id(of: s)
+                let m = CGDisplayCopyDisplayMode(id)
+                return ["name": s.localizedName, "id": id, "frame": "\(s.frame)", "scale": s.backingScaleFactor,
+                        "pixels": "\(m?.pixelWidth ?? 0)x\(m?.pixelHeight ?? 0)", "hz": m?.refreshRate ?? 0]
+            },
+            "airpods_output": HeadphoneCatalog.currentOutputAddress() ?? "none",
+        ]
+        // Every setting this app stores.
+        let keys = Array(Settings.flagDefaults.keys) + Array(Settings.choiceDefaults.keys) + [
+            "zoom", "fov", "lockYaw", "lockPitch", "lockRoll", "autoDriftCorrection", "steady", "tracking", "sharpness",
+            "highRefresh", "developer", "resolutionMode", "setup", "screenPitch", "gyroBias", "gyroScale"]
+        var stored: [String: Any] = [:]
+        for k in keys { if let v = UserDefaults.standard.object(forKey: k), JSONSerialization.isValidJSONObject([k: v]) { stored[k] = v } }
+        info["settings"] = stored
+        return info
+    }
+
+    @objc func exportTelemetry() {
+        renderer?.show("Exporting the telemetry session…", seconds: 3)
+        Telemetry.shared.export { [weak self] url in
+            guard let url else { self?.renderer?.show("No telemetry session to export", seconds: 3); return }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            self?.renderer?.show("Telemetry exported to the Desktop", seconds: 3)
         }
     }
 

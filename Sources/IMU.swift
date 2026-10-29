@@ -654,6 +654,27 @@ final class IMU {
         lock.unlock()
     }
 
+    private var lastLoggedTick: UInt32 = 0
+
+    /// One row per IMU report, with the fusion's state right after it (called under `lock`).
+    private func logSample(_ t: Double, tick: UInt32, acc: SIMD3<Double>, gyro: SIMD3<Double>, temperature: Double, proximity: Double) {
+        let dt = Double(tick &- lastLoggedTick) * 0.1 // ms; 0 = the glasses repeated the last report
+        lastLoggedTick = tick
+        let q = fusion.q, ypr = q.ypr, b = fusion.bias, w = fusion.omega
+        let state: String
+        switch fusion.state {
+        case .ready: state = "ready"
+        case .calibrating(let x): state = "calibrating:" + f3(x)
+        case .calibratingOnTable(let x): state = "table:" + f3(x)
+        }
+        Telemetry.shared.row("imu", [
+            f4(t), String(tick), f3(dt), f4(acc.x), f4(acc.y), f4(acc.z), deg4(gyro.x), deg4(gyro.y), deg4(gyro.z), f3(temperature), f3(proximity),
+            f4(q.real), f4(q.imag.x), f4(q.imag.y), f4(q.imag.z), deg4(ypr.x), deg4(ypr.y), deg4(ypr.z),
+            deg4(b.x), deg4(b.y), deg4(b.z), deg4(w.x), deg4(w.y), deg4(w.z),
+            f3(fusion.stillTime), fusion.accelRejected ? "1" : "0", state, deg4(fusion.temperatureShift.y), f4(fusion.scale.y),
+        ])
+    }
+
     private func handle(_ r: UnsafeMutablePointer<UInt8>, _ len: CFIndex) {
         guard len >= 64, r[0] == 0x99 else { return }
         switch r[1] {
@@ -670,6 +691,7 @@ final class IMU {
             let hostTime = CACurrentMediaTime()
             lock.lock()
             fusion.update(acc: acc, gyro: gyro, temperature: f(28), tick: tick)
+            if Telemetry.shared.enabled { logSample(hostTime, tick: tick, acc: acc, gyro: gyro, temperature: f(28), proximity: f(44)) }
             if fusion.state == .ready { history.append(PoseSample(time: hostTime, q: fusion.q, omega: fusion.omega)) }
             let doubleTap = taps.update(gyro: gyro, acc: acc, time: hostTime)
             self.raw.acc = acc

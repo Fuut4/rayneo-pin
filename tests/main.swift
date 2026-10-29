@@ -216,6 +216,29 @@ do {
     }
 }
 
+// 7b. Calibrated, then sitting still for 40 s: must stay calibrated (the "stuck at 99%" bug).
+do {
+    var history = PoseHistory(capacity: 15000)
+    var cal = AirPodsCalibration()
+    let X = simd_quatd(angle: 0.4, axis: simd_normalize(SIMD3(1, 0.2, 0.3)))
+    var q = simd_quatd.identity, t = 0.0, next = 0.0
+    var readyAt: Double?, lostAt: Double?
+    while t < 50 {
+        let w = t < 8 ? SIMD3(0.8 * sin(2 * t), 1.5 * sin(1.3 * t), 0.2 * sin(t)) : SIMD3<Double>(repeating: 0.001)
+        q = simd_normalize(q.extrapolated(w, 0.002))
+        history.append(PoseSample(time: t, q: q, omega: w))
+        if t >= next {
+            next += 0.04
+            let h = history
+            cal.ingest([Headphones.Sample(q: q * X.inverse, rate: X.act(w), angles: .zero, time: t - 0.05, arrival: t)], glasses: { h.pose(at: $0) })
+            if cal.ready, readyAt == nil { readyAt = t }
+            if readyAt != nil, !cal.ready, lostAt == nil { lostAt = t }
+        }
+        t += 0.002
+    }
+    check(readyAt != nil && lostAt == nil, "AirPods stay calibrated through 40 s of sitting still" + (lostAt.map { String(format: " (lost at %.0f s)", $0) } ?? ""))
+}
+
 // 8. Calibration hint follows the real direction: after turning left it must ask for the right.
 do {
     var history = PoseHistory(capacity: 3000)

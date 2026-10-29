@@ -262,11 +262,14 @@ struct SettingsView: View {
                 ToggleRow(title: "Open at login", isOn: m.login)
                 ToggleRow(title: "Developer mode", detail: "Live sensor and pipeline data in the glasses. ⌃⌥D", isOn: m.developer)
                 ToggleRow(title: "Also show developer data on the Mac", detail: "In a window you can screenshot.", isOn: m.developerOnMac)
-                ToggleRow(title: "Record telemetry", detail: "Sensors, AirPods, delays and decisions, 20× a second, to a file you can send for analysis. About 30 MB per hour; the last 15 sessions are kept.", isOn: m.flag("telemetry"))
-                Row(title: "Telemetry files", detail: "~/Library/Logs/RayNeoPin") {
-                    Button("Show in Finder") {
-                        try? FileManager.default.createDirectory(at: Telemetry.folder, withIntermediateDirectories: true)
-                        NSWorkspace.shared.activateFileViewerSelecting([Telemetry.shared.file ?? Telemetry.folder])
+                ToggleRow(title: "Record telemetry", detail: "Every glasses and AirPods sample and every frame, with all values and decisions, for analysis. Roughly 300–400 MB per hour; the last 8 sessions are kept.", isOn: m.flag("telemetry"))
+                Row(title: "Telemetry", detail: "~/Library/Logs/RayNeoPin — one folder per session. Export zips the current session onto the Desktop, ready to send.") {
+                    HStack {
+                        Button("Show in Finder") {
+                            try? FileManager.default.createDirectory(at: Telemetry.folder, withIntermediateDirectories: true)
+                            NSWorkspace.shared.activateFileViewerSelecting([Telemetry.shared.session ?? Telemetry.folder])
+                        }
+                        Button("Export Session", action: m.run { m.app.exportTelemetry() })
                     }
                 }
             }

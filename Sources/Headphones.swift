@@ -242,6 +242,7 @@ struct AirPodsCalibration {
         nodded = 1
         phase = .done
         seeded = true
+        calibrated = true
         for (k, x) in s.buds ?? [:] where x.count == 4 {
             if let b = Int(k) { xByBud[b] = simd_normalize(simd_quatd(vector: SIMD4(x[0], x[1], x[2], x[3]))) }
         }
@@ -251,7 +252,13 @@ struct AirPodsCalibration {
     static let neededPairs = 50
     private(set) var lastPairTime = 0.0
 
-    var ready: Bool {
+    /// Once calibrated it stays calibrated: only a recalibration, an unknown earbud taking over or
+    /// a reseat (which keeps the old result until the new one is solved) change that. Re-checking
+    /// against the last ~25 s of movement used to "lose" it whenever you sat still for a while.
+    var ready: Bool { calibrated && X != nil && W != nil }
+    private(set) var calibrated = false
+
+    private var conditionsMet: Bool {
         X != nil && W != nil && fitError < 0.4 && pairCount >= AirPodsCalibration.neededPairs && turned >= 1 && nodded >= 1
             && (phase == .finishing || phase == .done)
     }
@@ -362,6 +369,7 @@ struct AirPodsCalibration {
                 lastPairTime = s.arrival
                 // ~25 s of turning, within the glasses' 30 s history: bad early data ages out.
                 if moving.count > 600 { moving.removeFirst(moving.count - 600) }
+                if let first = moving.first, s.time - first.t > 25 { moving.removeAll { s.time - $0.t > 25 } }
                 newSamples += 1
             }
             // Refinements never make the calibration drop out: the old W stays until replaced.
@@ -425,6 +433,8 @@ struct AirPodsCalibration {
         glitches = moving.count - all.count
         // After a reseat the previous result keeps working until there's enough new movement.
         if relearning, all.count < AirPodsCalibration.neededPairs { return }
+        // Calibrated and not much recent movement: keep the result, don't re-judge it on scraps.
+        if calibrated, !relearning, all.count < AirPodsCalibration.neededPairs { return }
         relearning = false
         pairCount = all.count
         // A seeded X is only replaced once there is as much fresh data as it was built from.
@@ -443,6 +453,7 @@ struct AirPodsCalibration {
         // W depends on X: redo it while X is still improving.
         if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
            2 * .pi - (old.inverse * X).angle > 0.005 { wStale = true }
+        if conditionsMet { calibrated = true }
         if ready { phase = .done; xByBud[bud] = X }
         peak = max(peak, min(rawProgress, 0.99))
     }
@@ -501,6 +512,7 @@ struct AirPodsCalibration {
         } else {
             X = nil
             W = nil
+            calibrated = false
             fitError = 1
             pairCount = 0
             phase = .finishing // the guided movement was already done; just keep moving
