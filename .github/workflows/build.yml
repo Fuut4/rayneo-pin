@@ -54,7 +54,7 @@ jobs:
       - name: Settings window snapshots
         run: |
           ./RayNeoPin --settings-snapshot lab/settings > snapshot.txt 2>&1 || {
-            tail -25 snapshot.txt | while read -r l; do echo "::error title=snapshot::$l"; done
+            tail -5 snapshot.txt | while read -r l; do echo "::error title=snapshot::$l"; done
             exit 1
           }
       - name: Publish lab results to refs/lab/results
