@@ -409,7 +409,8 @@ struct AirPodsCalibration {
                 newSamples += 1
             }
             // Refinements never make the calibration drop out: the old W stays until replaced.
-            if W == nil || wStale, let X, fitError < 0.4 {
+            // Once calibrated, X is trusted: a reference jump is always re-taken, whatever the latest fit.
+            if W == nil || wStale, let X, fitError < 0.4 || calibrated {
                 W = simd_normalize(g.q * X.inverse * bodyToWorld(s).inverse)
                 xAtW = X
                 wStale = false
