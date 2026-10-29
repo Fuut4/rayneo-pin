@@ -218,6 +218,71 @@ enum WindowRescue {
         }
         return (moved, false)
     }
+
+    /// A window's place on one of our virtual displays, to put it back after they come back.
+    struct Parked {
+        let pid: pid_t
+        let title: String
+        let size: CGSize
+        let display: Int // 0 main, -1 left, 1 right
+        let offset: CGPoint // from that display's top-left
+    }
+
+    /// Windows whose center is on one of `displays` (role → bounds). Needs Accessibility.
+    static func park(on displays: [Int: CGRect]) -> [Parked] {
+        guard AXIsProcessTrusted() else { return [] }
+        var parked: [Parked] = []
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular && app.processIdentifier != getpid() {
+            for (window, p, s) in windows(of: app.processIdentifier) {
+                let center = CGPoint(x: p.x + s.width / 2, y: p.y + s.height / 2)
+                guard let (role, bounds) = displays.first(where: { $0.value.contains(center) }) else { continue }
+                parked.append(Parked(pid: app.processIdentifier, title: title(of: window), size: s, display: role,
+                                     offset: CGPoint(x: p.x - bounds.minX, y: p.y - bounds.minY)))
+            }
+        }
+        return parked
+    }
+
+    /// Puts parked windows back (same app, same title, else same size), each on its display.
+    static func unpark(_ parked: [Parked], on displays: [Int: CGRect]) -> Int {
+        guard AXIsProcessTrusted() else { return 0 }
+        var moved = 0
+        for (pid, group) in Dictionary(grouping: parked, by: \.pid) {
+            var available = windows(of: pid)
+            for item in group {
+                guard let bounds = displays[item.display],
+                      let i = available.firstIndex(where: { title(of: $0.0) == item.title && !item.title.isEmpty })
+                        ?? available.firstIndex(where: { abs($0.2.width - item.size.width) < 2 && abs($0.2.height - item.size.height) < 2 })
+                else { continue }
+                var np = CGPoint(x: bounds.minX + item.offset.x, y: bounds.minY + item.offset.y)
+                if let v = AXValueCreate(.cgPoint, &np),
+                   AXUIElementSetAttributeValue(available[i].0, kAXPositionAttribute as CFString, v) == .success { moved += 1 }
+                available.remove(at: i)
+            }
+        }
+        return moved
+    }
+
+    private static func windows(of pid: pid_t) -> [(AXUIElement, CGPoint, CGSize)] {
+        var value: CFTypeRef?
+        AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value)
+        return (value as? [AXUIElement] ?? []).compactMap { w in
+            var pv: CFTypeRef?, sv: CFTypeRef?
+            AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &pv)
+            AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sv)
+            guard let pv, let sv else { return nil }
+            var p = CGPoint.zero, s = CGSize.zero
+            AXValueGetValue(pv as! AXValue, .cgPoint, &p)
+            AXValueGetValue(sv as! AXValue, .cgSize, &s)
+            return (w, p, s)
+        }
+    }
+
+    private static func title(of window: AXUIElement) -> String {
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &v)
+        return v as? String ?? ""
+    }
 }
 
 /// Cursor handling for the glasses' physical display:

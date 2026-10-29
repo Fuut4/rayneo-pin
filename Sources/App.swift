@@ -505,7 +505,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Switches between the display setups (see Settings.sourceKind).
     func applySetup() {
         if settings.sourceKind == "virtual" {
-            if monitor == nil { createMonitor() }
+            // Only while the glasses are plugged in (see syncVirtualDisplays).
+            if monitor == nil { if Displays.glasses() != nil { createMonitor() } else { virtualAwaitingGlasses = true } }
         } else if monitor != nil {
             monitor = nil // releasing it removes the virtual display
         }
@@ -559,8 +560,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Displays.setRefresh(settings.highRefresh ? 120 : 60, glasses: Displays.id(of: g))
     }
 
+    // MARK: Glasses unplugged
+
+    /// Virtual displays exist only while the glasses are plugged in: without them, windows on a
+    /// virtual display sit on a screen nobody can see (and used to stay there until you quit).
+    /// Unplugged for 3 s (the 120 Hz switch drops the display for a moment): note where each
+    /// window was, then remove the displays, so macOS brings the windows to the Mac's screen.
+    /// Plugged back in: recreate them and put the windows back.
+    func syncVirtualDisplays() {
+        if Displays.glasses() != nil {
+            unplugWork?.cancel()
+            unplugWork = nil
+            guard virtualAwaitingGlasses, settings.sourceKind == "virtual", monitor == nil else { return }
+            virtualAwaitingGlasses = false
+            createMonitor()
+            let parked = parkedWindows
+            parkedWindows = []
+            guard !parked.isEmpty else { return }
+            // After the displays are created and arranged (createMonitor's 1 s, side screens' 1 s).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                guard let self else { return }
+                let back = WindowRescue.unpark(parked, on: self.virtualDisplayBounds())
+                Telemetry.shared.event("windows back on the virtual display", details: "\(back) of \(parked.count)", time: CACurrentMediaTime())
+            }
+            return
+        }
+        guard monitor != nil || !sideMonitors.isEmpty, unplugWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, Displays.glasses() == nil else { return }
+            self.unplugWork = nil
+            self.parkedWindows = WindowRescue.park(on: self.virtualDisplayBounds())
+            for side in Array(self.sideMonitors.keys) {
+                self.sideMonitors[side] = nil
+                if let c = self.sideCaptures.removeValue(forKey: side) { Task { await c.stop() } }
+            }
+            self.renderer?.setSideScreens([])
+            self.monitor = nil // releasing it removes the display; macOS moves its windows to the Mac
+            Task { await self.capture.stop() }
+            self.virtualAwaitingGlasses = true
+            Telemetry.shared.event("glasses unplugged: virtual displays removed", details: "\(self.parkedWindows.count) windows noted", time: CACurrentMediaTime())
+            self.macCard.show(OverlayState(tone: .info, icon: "eyeglasses", title: "Glasses disconnected",
+                                           message: "Their windows are on this screen now. They go back when you plug the glasses in."),
+                              hideAfter: 5)
+        }
+        unplugWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    private func virtualDisplayBounds() -> [Int: CGRect] {
+        var d: [Int: CGRect] = [:]
+        if let monitor { d[0] = CGDisplayBounds(monitor.displayID) }
+        for (side, m) in sideMonitors { d[side] = CGDisplayBounds(m.displayID) }
+        return d
+    }
+
+    private var unplugWork: DispatchWorkItem?
+    private var virtualAwaitingGlasses = false
+    private var parkedWindows: [WindowRescue.Parked] = []
+
     /// Creates/moves the glasses window and (re)starts capture when what we show changed.
     func screensChanged() {
+        syncVirtualDisplays()
         let glasses = Displays.glasses()
         let gid = glasses.map(Displays.id)
         let single = settings.singleDisplay
