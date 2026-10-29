@@ -14,7 +14,7 @@ Every option below has its own switch in **Settings**, so you can turn it on and
 
 ## Text clarity: render lab results
 
-`RayNeoPin --render-lab [folder]` renders real macOS text through the glasses pipeline offscreen, for every combination of the readability options. It scores each result against the same text drawn natively at the size it appears in the glasses (0 = identical). CI runs it on every push and publishes the scores and zoomed crops to the `lab-results` branch.
+`RayNeoPin --render-lab [folder]` renders real macOS text through the glasses pipeline offscreen, for every combination of the readability options. It scores each result against the same text drawn natively at the size it appears in the glasses (0 = identical). CI runs it on every push and publishes the scores and zoomed crops to `refs/lab/results` (`git fetch origin refs/lab/results`).
 
 | Setup | Error vs native |
 |---|---|

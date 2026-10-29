@@ -430,8 +430,8 @@ struct SettingsView: View {
                 Row(title: "AirPods", detail: "Learns how your AirPods sit in your ears: turn left and right once, then look up and down once.") {
                     Button("Recalibrate", action: m.run { m.app.recalibrateAirPods() })
                 }
-                ToggleRow(title: "Bring AirPods back when you put the glasses on",
-                          detail: "If your iPhone took them, putting the glasses on connects them to this Mac again. Never in the middle of a session, so a call on the iPhone isn't interrupted.",
+                ToggleRow(title: "Take the AirPods back when you recenter",
+                          detail: "If another device has them, recentering (or putting the glasses on) plays a short sound on them so they come back to this Mac. Otherwise they stay where you use them, and tracking continues with the glasses.",
                           isOn: m.flag("reclaimAirPods"))
                 Row(title: "Gyro", detail: "Put the glasses on a table for 3 s. Fixes most drift.") {
                     Button("Calibrate…", action: m.run { m.app.calibrate() })

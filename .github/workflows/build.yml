@@ -7,7 +7,7 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true # only the newest commit matters
 permissions:
-  contents: write # the render lab publishes its results to the lab-results branch
+  contents: write # the render lab publishes its results to refs/lab/results
 jobs:
   build:
     runs-on: macos-15
@@ -47,7 +47,7 @@ jobs:
           ./RayNeoPin --render-lab lab | tee lab/results.txt
       - name: Settings window snapshots
         run: ./RayNeoPin --settings-snapshot lab/settings
-      - name: Publish lab results to the lab-results branch
+      - name: Publish lab results to refs/lab/results
         if: github.event_name == 'push'
         run: |
           cp results.txt lab/tests.txt
@@ -58,4 +58,5 @@ jobs:
           echo "Render lab results for ${GITHUB_SHA} (${GITHUB_REF_NAME})" > README.md
           git add -A
           git commit -qm "Render lab results for ${GITHUB_SHA}"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" lab-results
+          # A plain ref, not a branch, so the repository only lists main and develop.
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/lab/results
