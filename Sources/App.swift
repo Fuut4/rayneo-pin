@@ -293,16 +293,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, let glasses = Displays.glasses() else { return }
             self.renderer?.keepOn(glasses)
-            if self.settings.tracking != .glasses {
+            if self.settings.tracking != .glasses, !self.wasAsleep {
                 self.headphones.keepAlive()
                 self.renderer?.setAirPodsProblem(self.headphones.problem(outputIsBluetooth: HeadphoneCatalog.currentOutputAddress() != nil))
             }
-            // Glasses taken off: stop capturing until they're worn again.
+            // Glasses taken off: rest. No capture, no frames, no AirPods motion (their battery and
+            // Bluetooth) until they're worn again. The glasses' IMU keeps streaming, because it is
+            // cheap, it's how the gyro bias is refined while they lie still, and it keeps the wake-up
+            // notice coming. The displays stay as they are, so no window moves.
             let asleep = self.imu.isAsleep
             if asleep != self.wasAsleep {
                 self.wasAsleep = asleep
                 let captures = [self.capture] + Array(self.sideCaptures.values)
                 Task { for c in captures { if asleep { await c.pause() } else { await c.resume() } } }
+                self.renderer?.setResting(asleep)
+                if self.settings.tracking != .glasses { if asleep { self.headphones.stop() } else { self.headphones.start() } }
             }
             if self.settings.developer { self.renderer?.setDeveloperDisplayInfo(self.developerDisplayInfo()) }
             if self.settings.developer, self.settings.developerOnMac, let panel = self.developerPanel, !NSScreen.screens.contains(where: {
@@ -461,7 +466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// The caret's position on the pinned screen, and when it last moved (= you're typing).
     func pollCaret() {
-        guard settings.flag("typingDrift"), let renderer, !caretBusy, case .display(let id)? = capture.source else { return }
+        guard settings.flag("typingDrift"), !wasAsleep, let renderer, !caretBusy, case .display(let id)? = capture.source else { return }
         caretBusy = true
         caretQueue.async { [weak self] in
             let rect = Caret.rect()
@@ -664,6 +669,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(toggle("Developer Mode", #selector(toggleDeveloper), key: "d") { [weak self] in self?.settings.developer == true })
         menu.addItem(item("Settings…", #selector(showSettings), key: ",", modifiers: .command))
         menu.addItem(item("Check for Updates…", #selector(update)))
+        let channels = NSMenu()
+        for c in UpdateChannel.allCases {
+            let i = toggle(c.title, #selector(pickUpdateChannel(_:))) { [weak self] in self?.updateChannel == c }
+            i.representedObject = c.rawValue
+            i.toolTip = c.detail
+            channels.addItem(i)
+        }
+        menu.addItem(submenu("Update Channel", channels))
         menu.addItem(.separator())
         menu.addItem(item("Quit RayNeoPin", #selector(quitApp), key: "q"))
         statusItem.menu = menu
@@ -1303,8 +1316,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func coffee() { NSWorkspace.shared.open(AppDelegate.coffeeURL) }
 
-    /// Pulls the latest source, rebuilds, reinstalls and relaunches (see install.sh).
-    @objc func update() {
+    static let sourceFolder = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/RayNeoPin/src")
+
+    /// The branch updates come from, as install.sh last checked it out.
+    var updateChannel: UpdateChannel {
+        let head = (try? String(contentsOf: AppDelegate.sourceFolder.appendingPathComponent(".git/HEAD"), encoding: .utf8)) ?? ""
+        return head.trimmingCharacters(in: .whitespacesAndNewlines) == "ref: refs/heads/main" || head.isEmpty ? .release : .developer
+    }
+
+    @objc func pickUpdateChannel(_ sender: NSMenuItem) {
+        if let c = (sender.representedObject as? String).flatMap(UpdateChannel.init) { setUpdateChannel(c) }
+    }
+
+    /// Switches channel and updates right away to its latest version.
+    func setUpdateChannel(_ channel: UpdateChannel) {
+        guard channel != updateChannel else { return }
+        update(branch: channel.rawValue)
+    }
+
+    @objc func update() { update(branch: nil) }
+
+    /// Pulls the latest source (of `branch`, or the current channel), rebuilds, reinstalls and
+    /// relaunches (see install.sh).
+    func update(branch: String?) {
         let script = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/RayNeoPin/src/install.sh").path
         guard FileManager.default.fileExists(atPath: script) else {
@@ -1320,7 +1355,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = [script]
-        p.environment = ProcessInfo.processInfo.environment.merging(["RAYNEOPIN_FROM_APP": "1"]) { $1 }
+        var environment = ProcessInfo.processInfo.environment
+        environment["RAYNEOPIN_FROM_APP"] = "1"
+        if let branch { environment["RAYNEOPIN_BRANCH"] = branch }
+        p.environment = environment
         p.standardOutput = try? FileHandle(forWritingTo: logURL)
         p.standardError = p.standardOutput
         // Follow the script's "==> step/total" lines while it runs.
@@ -1387,4 +1425,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var updateStep = -1
     private var updateStepStart = Date()
+}
+
+/// Where updates come from, like Apple's public betas: Release follows `main`, Developer follows
+/// `develop`, where new work lands first.
+enum UpdateChannel: String, CaseIterable {
+    case release = "main", developer = "develop"
+
+    var title: String { self == .release ? "Release" : "Developer" }
+    var detail: String {
+        self == .release ? "Tested versions." : "New features first, as soon as they're built. May be rough."
+    }
 }

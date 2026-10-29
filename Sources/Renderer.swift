@@ -584,6 +584,12 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         window.orderFrontRegardless()
     }
 
+    /// Glasses off the head: no frames at all until they're worn again (the panel is off anyway).
+    func setResting(_ resting: Bool) {
+        link?.isPaused = resting
+        metalLink?.isPaused = resting
+    }
+
     func shutdown() {
         link?.invalidate()
         metalLink?.invalidate()

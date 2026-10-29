@@ -22,6 +22,8 @@ curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | 
 
 This builds the app into `/Applications/RayNeoPin.app` and launches it. To update, use **Check for Updates…** in the menu: it shows each step (download, build, install) and restarts into the new version. Running the command again works too; it does nothing if you're already up to date, and `--force` rebuilds anyway.
 
+**Update channels.** Like Apple's betas, **Update Channel** in the menu (or Settings › About) picks where updates come from: **Release** follows `main`, **Developer** follows `develop`, where new work lands first. Switching updates right away, and switching back works the same way. Your settings carry over.
+
 **First run**
 
 1. Allow **Screen & System Audio Recording** for RayNeoPin. The app opens the settings pane and relaunches itself once access is granted.
@@ -173,6 +175,10 @@ Sleep and wake arrive as ack frames (`0xC8`) with `0x41` / `0x42` at byte 8. The
 | Latency | Late latching (pose read after the drawable is acquired). Look-ahead is 10 ms + 0.45 × frame time, plus 7 ms for the bottom row (panel scan-out), as tuned in [XRLinuxDriver](https://github.com/wheaney/XRLinuxDriver) for RayNeo. |
 | Micro-movements | 1€ filter, 0.1° soft dead zone and motion-adaptive smoothing (cf. [OpenTrack Accela](https://github.com/opentrack/opentrack), [AirAnchor](https://github.com/jief123/AirAnchor)) |
 | AirPods ↔ glasses | Clock offset from rotation-speed correlation. Quaternion convention checked against `rotationRate`. Ear-mount rotation solved from paired angular velocities (Wahba's problem, Davenport q-method), plus a world-frame alignment. Headings are compared at each sample's own timestamp against a 5 s glasses pose history. Every sample is cross-checked against the glasses' gyro at the same instant. AirPods turning while the head doesn't (adjusting them, reconnecting, a bud swap) are ignored, and the glasses take over until the two agree again. A persistent disagreement is treated as a reseat, and the ear-mount rotation is relearned. The AirPods heading correction is capped at 0.5 °/s, so it can never make the screen jump. |
+
+### Rest
+
+When the glasses report they're no longer worn, RayNeoPin rests: no capture, no frames, no AirPods motion (sparing their battery), no caret polling. The glasses' IMU keeps streaming, since it's cheap, refines the gyro bias while they lie still, and carries the wake-up notice. The displays stay as they are, so no window moves. Putting the glasses on resumes everything within a second.
 
 ### Rendering
 

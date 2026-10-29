@@ -592,13 +592,21 @@ struct SettingsView: View {
                 .padding(.vertical, 6)
             }
             Section {
-                Row(title: "Updates", detail: "Rebuilds from the latest source on your branch.") {
+                Row(title: "Updates", detail: "Rebuilds from the latest source of your channel.") {
                     Button("Check for Updates…", action: m.run { m.app.update() })
+                }
+                Row(title: "Update channel", detail: m.app.updateChannel.detail + " Switching updates right away.") {
+                    Picker("", selection: Binding(get: { m.app.updateChannel }, set: { c in m.run { m.app.setUpdateChannel(c) }() })) {
+                        ForEach(UpdateChannel.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .fixedSize()
                 }
                 Row(title: "Source code") {
                     Link("GitHub", destination: URL(string: "https://github.com/Fuut4/rayneo-pin")!)
                 }
-                Row(title: "Support", detail: "Help pay Claude's bill.") {
+                Row(title: "Support", detail: "If RayNeoPin is useful to you.") {
                     Link("☕ Buy Me a Coffee", destination: AppDelegate.coffeeURL)
                 }
             }

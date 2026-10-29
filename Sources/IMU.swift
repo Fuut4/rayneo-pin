@@ -655,6 +655,7 @@ final class IMU {
     }
 
     private var lastLoggedTick: UInt32 = 0
+    private var lastRestLog = 0.0
 
     /// One row per IMU report, with the fusion's state right after it (called under `lock`).
     private func logSample(_ t: Double, tick: UInt32, acc: SIMD3<Double>, gyro: SIMD3<Double>, temperature: Double, proximity: Double) {
@@ -691,7 +692,11 @@ final class IMU {
             let hostTime = CACurrentMediaTime()
             lock.lock()
             fusion.update(acc: acc, gyro: gyro, temperature: f(28), tick: tick)
-            if Telemetry.shared.enabled { logSample(hostTime, tick: tick, acc: acc, gyro: gyro, temperature: f(28), proximity: f(44)) }
+            // Resting (not worn): 10 rows a second are enough to follow the bias and cooling.
+            if Telemetry.shared.enabled, !raw.asleep || hostTime - lastRestLog >= 0.1 {
+                if raw.asleep { lastRestLog = hostTime }
+                logSample(hostTime, tick: tick, acc: acc, gyro: gyro, temperature: f(28), proximity: f(44))
+            }
             if fusion.state == .ready { history.append(PoseSample(time: hostTime, q: fusion.q, omega: fusion.omega)) }
             let doubleTap = taps.update(gyro: gyro, acc: acc, time: hostTime)
             self.raw.acc = acc

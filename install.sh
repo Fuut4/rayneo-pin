@@ -3,9 +3,10 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | zsh
 #
-# Another branch (remembered for later updates; RAYNEOPIN_BRANCH=main goes back):
+# The Developer channel (new work first; remembered for later updates, and the app's
+# Update Channel menu switches both ways; RAYNEOPIN_BRANCH=main goes back to Release):
 #
-#   curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/test/everything/install.sh | RAYNEOPIN_BRANCH=test/everything zsh
+#   curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/develop/install.sh | RAYNEOPIN_BRANCH=develop zsh
 #
 # Keeps the source in ~/Library/Application Support/RayNeoPin/src, builds it, installs the app
 # to /Applications and relaunches it. Pass --force to rebuild even when already up to date.
@@ -36,6 +37,8 @@ main() {
     mkdir -p "${SRC:h}"
     git clone --quiet "$REPO" "$SRC"
   fi
+  # The old test branch became the Developer channel.
+  [[ "$BRANCH" == "test/everything" ]] && BRANCH=develop
   git -C "$SRC" checkout --quiet -B "$BRANCH" "origin/$BRANCH"
   git -C "$SRC" reset --quiet --hard "origin/$BRANCH"
 
