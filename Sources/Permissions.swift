@@ -34,7 +34,7 @@ enum Permission: String, CaseIterable, Identifiable {
 
     var purpose: String {
         switch self {
-        case .screenRecording: return "Shows your screen in the glasses. Required."
+        case .screenRecording: return "Shows your screen in the glasses."
         case .accessibility: return "Keeps windows off the glasses' own display and puts them back after unplugging (Virtual Display), and the typing hint."
         case .motion: return "Reads the AirPods' head motion, the drift reference."
         case .bluetooth: return "Connects your AirPods when you pick them in the menu."
@@ -312,12 +312,14 @@ enum PermissionsWindow {
 
     /// A fixed-size window (also used for the CI snapshot).
     static func window(for app: AppDelegate) -> NSWindow {
-        let size = NSSize(width: 560, height: 470)
+        let model = PermissionsModel(app)
+        let rows = model.shown.count + (Permission.adHocSigned ? 1 : 0)
+        let size = NSSize(width: 560, height: CGFloat(120 + rows * 56))
         let w = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                          styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
         w.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: PermissionsView(model: PermissionsModel(app), standalone: true)
+        let host = NSHostingView(rootView: PermissionsView(model: model, standalone: true)
             .frame(width: size.width, height: size.height, alignment: .top)
             .background(Color(nsColor: .windowBackgroundColor)))
         host.frame = NSRect(origin: .zero, size: size)
