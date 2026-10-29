@@ -364,9 +364,14 @@ struct AirPodsCalibration {
                 // more is a jump of their reference, not motion: macOS re-centers AirPods yaw whenever
                 // an app starts Spatial Audio, and buds get swapped or reseated. Re-take the reference
                 // at once instead of letting the drift correction slowly drag the screen over.
-                let turned = (prev.q.inverse * s.q).angle
-                let measured = simd_length((s.rate + prev.rate) / 2) * dt
-                if dt < 0.2, abs(min(turned, 2 * .pi - turned) - measured) > max(2 * .pi / 180, 0.3 * measured) {
+                // Compared as rotation vectors, axis and all: compared by size alone, a 10° re-center
+                // during a fast turn could add up to about the turn's own size and slip through.
+                // Either quaternion convention (it may not be known yet); a jump breaks both.
+                let measured = (s.rate + prev.rate) / 2 * dt
+                let asBodyToWorld = s.q.angularVelocity(from: prev.q, dt: dt) * dt
+                let asWorldToBody = s.q.inverse.angularVelocity(from: prev.q.inverse, dt: dt) * dt
+                let mismatch = min(simd_length(asBodyToWorld - measured), simd_length(asWorldToBody - measured))
+                if dt < 0.2, mismatch > max(2 * .pi / 180, 0.3 * simd_length(measured)) {
                     jumps += 1
                     wStale = true
                 }
