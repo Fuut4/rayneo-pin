@@ -212,7 +212,8 @@ do {
         let s2 = Headphones.Sample(q: W2.inverse * q2 * X.inverse, rate: .zero, angles: .zero, time: t2, arrival: t2)
         let err2 = cal.pose(s2).map { shortestAngle($0, q2) } ?? .pi
         check(cal.jumps > jumpsBefore && err2 < 2 * deg,
-              String(format: "AirPods 10° re-center (Spatial Audio) detected and absorbed: error %.2f°", err2 / deg))
+              String(format: "AirPods 10° re-center (Spatial Audio) detected and absorbed: error %.2f° (jumps %d→%d, ready %d, fit %.3f, lag %.0f ms, reseats %d, gaps %d)",
+                     err2 / deg, jumpsBefore, cal.jumps, cal.ready ? 1 : 0, cal.fitError, cal.lag * 1000, cal.reseats, cal.gaps))
     }
 }
 
