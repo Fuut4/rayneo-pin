@@ -272,7 +272,8 @@ struct AirPodsCalibration {
     /// What to do next, for the calibration hint.
     var hint: String {
         switch phase {
-        case .turn: return yawRange.lo > -AirPodsCalibration.sweepYaw ? "step 1 of 2: turn your head to the LEFT" : "step 1 of 2: now to the RIGHT"
+        // Yaw grows to the left (counterclockwise seen from above), so the left side is the high end.
+        case .turn: return yawRange.hi < AirPodsCalibration.sweepYaw ? "step 1 of 2: turn your head to the LEFT" : "step 1 of 2: now to the RIGHT"
         case .nod: return pitchRange.hi < AirPodsCalibration.sweepPitch ? "step 2 of 2: look UP" : "step 2 of 2: now look DOWN"
         case .finishing: return fitError >= 0.4 && pairCount >= AirPodsCalibration.neededPairs
             ? "once more, a bit slower: left, right, up, down" : "checking against the glasses — keep moving gently"

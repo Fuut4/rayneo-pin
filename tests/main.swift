@@ -216,5 +216,27 @@ do {
     }
 }
 
+// 8. Calibration hint follows the real direction: after turning left it must ask for the right.
+do {
+    var history = PoseHistory(capacity: 3000)
+    var cal = AirPodsCalibration()
+    var t = 0.0, yaw = 0.0
+    var hintAfterLeft = ""
+    while t < 3 {
+        // Left = counterclockwise seen from above = +yaw about +y; 0–1.5 s turn left to +30°.
+        let w = SIMD3(0.0, t < 1.5 ? 0.35 : 0, 0.0)
+        yaw += w.y * 0.002
+        let q = simd_quatd(angle: yaw, axis: SIMD3(0, 1, 0))
+        history.append(PoseSample(time: t, q: q, omega: w))
+        if Int(t * 500) % 20 == 0 {
+            let h = history
+            cal.ingest([Headphones.Sample(q: q, rate: w, angles: .zero, time: t - 0.05, arrival: t)], glasses: { h.pose(at: $0) })
+        }
+        if t > 1.6, hintAfterLeft.isEmpty { hintAfterLeft = cal.hint }
+        t += 0.002
+    }
+    check(hintAfterLeft.contains("RIGHT"), "after turning left the hint asks for the right (\(hintAfterLeft))")
+}
+
 print(failures == 0 ? "All tests passed" : "\(failures) test(s) failed")
 exit(failures == 0 ? 0 : 1)
