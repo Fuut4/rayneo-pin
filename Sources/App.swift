@@ -1332,14 +1332,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Switches channel and updates right away to its latest version.
     func setUpdateChannel(_ channel: UpdateChannel) {
         guard channel != updateChannel else { return }
-        update(branch: channel.rawValue)
+        runUpdate(branch: channel.rawValue)
     }
 
-    @objc func update() { update(branch: nil) }
+    @objc func update() { runUpdate(branch: nil) }
 
     /// Pulls the latest source (of `branch`, or the current channel), rebuilds, reinstalls and
     /// relaunches (see install.sh).
-    func update(branch: String?) {
+    func runUpdate(branch: String?) {
         let script = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/RayNeoPin/src/install.sh").path
         guard FileManager.default.fileExists(atPath: script) else {
