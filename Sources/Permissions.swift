@@ -207,6 +207,7 @@ final class PermissionsModel: ObservableObject {
     /// While visible: System Settings changes don't notify us, so look again every 1.5 s.
     func watch(_ on: Bool) {
         timer?.invalidate()
+        guard Bundle.main.bundleIdentifier != nil else { return }
         timer = on ? Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in self?.refresh() } : nil
     }
 }

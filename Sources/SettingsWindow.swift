@@ -647,6 +647,7 @@ enum SettingsSnapshot {
             view.cacheDisplay(in: view.bounds, to: rep)
             try? rep.representation(using: .png, properties: [:])?.write(to: folder.appendingPathComponent("settings-\(page.rawValue).png"))
             w.orderOut(nil)
+            FileHandle.standardError.write(Data("snapshot \(page.rawValue) done\n".utf8))
         }
         // The permissions window.
         FileHandle.standardError.write(Data("snapshot permissions window\n".utf8))
