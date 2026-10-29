@@ -29,6 +29,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSBluetoothAlwaysUsageDescription</key><string>RayNeoPin connects the AirPods you pick so they can be used for head tracking.</string>
+  <key>NSCameraUsageDescription</key><string>Optional: RayNeoPin can watch which way your face points to keep the pinned screen from drifting. Nothing is recorded or sent anywhere.</string>
   <key>NSMotionUsageDescription</key><string>RayNeoPin uses your AirPods head tracking as a second reference to keep the pinned screen from drifting.</string>
 </dict>
 </plist>

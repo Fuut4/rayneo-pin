@@ -1,5 +1,6 @@
 //   RayNeoPin.app              menu bar app (eyeglasses icon)
 //   RayNeoPin --imu-test       print orientation to the terminal, no rendering
+//   RayNeoPin --render-lab [dir]  score text clarity of every readability option offscreen
 //   RayNeoPin --check-permission  exit 0 if Screen Recording is granted (used for auto-relaunch)
 //   RayNeoPin --list-headphones   paired AirPods, their model and head tracking support
 
@@ -16,6 +17,12 @@ if CommandLine.arguments.contains("--check-permission") {
         print("\(d.address.uppercased() == current ? "*" : " ") \(d.name) — \(d.model) — \(tracking) — \(d.connected ? "connected" : "not connected")")
     }
     print("* = current sound output (what head tracking follows)")
+} else if let i = CommandLine.arguments.firstIndex(of: "--settings-snapshot"), CommandLine.arguments.count > i + 1 {
+    SettingsSnapshot.run(URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+} else if let i = CommandLine.arguments.firstIndex(of: "--render-lab") {
+    _ = NSApplication.shared
+    let dir = CommandLine.arguments.count > i + 1 ? CommandLine.arguments[i + 1] : NSTemporaryDirectory() + "rayneopin-lab"
+    RenderLab.run(output: URL(fileURLWithPath: dir))
 } else if CommandLine.arguments.contains("--imu-test") {
     setvbuf(stdout, nil, _IOLBF, 0)
     let imu = IMU(savedBias: Settings().gyroBias)

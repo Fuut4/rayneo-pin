@@ -1,0 +1,61 @@
+name: Build
+on:
+  push: # also gives pull requests from this repository their check
+  pull_request:
+    types: [opened, reopened] # forks; same-repo PRs use the push run
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true # only the newest commit matters
+permissions:
+  contents: write # the render lab publishes its results to the lab-results branch
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          swiftc --version
+          set -o pipefail
+          swiftc -O -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
+            Sources/*.swift -o RayNeoPin 2>&1 | tee build.txt || {
+            grep -E "error:" build.txt | head -20 | while read -r l; do echo "::error title=compile::$l"; done
+            exit 1
+          }
+      - name: Compile the Metal shader (the app compiles it at runtime)
+        run: |
+          python3 - <<'PY'
+          import re, textwrap
+          s = open("Sources/Renderer.swift").read()
+          m = re.search(r'static let shader = """\n(.*?)\n\s*"""', s, re.S)
+          open("shader.metal", "w").write(textwrap.dedent(m.group(1)))
+          PY
+          xcrun -sdk macosx metal -c shader.metal -o shader.air
+      - name: Logic tests
+        run: |
+          swiftc -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
+            $(ls Sources/*.swift | grep -v main.swift) tests/main.swift -o logic-tests
+          set +e
+          ./logic-tests > results.txt 2>&1; status=$?
+          cat results.txt
+          echo "exit status $status" >> results.txt
+          if [ $status -ne 0 ]; then tail -12 results.txt | while read -r line; do echo "::error title=logic tests::$line"; done; fi
+          exit $status
+      - name: Render lab (text clarity of every option)
+        run: |
+          mkdir -p lab
+          ./RayNeoPin --render-lab lab | tee lab/results.txt
+      - name: Settings window snapshots
+        run: ./RayNeoPin --settings-snapshot lab/settings
+      - name: Publish lab results to the lab-results branch
+        if: github.event_name == 'push'
+        run: |
+          cp results.txt lab/tests.txt
+          cd lab
+          git init -q -b lab-results
+          git config user.name "render lab"
+          git config user.email "actions@users.noreply.github.com"
+          echo "Render lab results for ${GITHUB_SHA} (${GITHUB_REF_NAME})" > README.md
+          git add -A
+          git commit -qm "Render lab results for ${GITHUB_SHA}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" lab-results

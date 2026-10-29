@@ -20,6 +20,7 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
         var angles: SIMD3<Double> // CMAttitude (yaw, pitch, roll), for display
         var time: Double // when it was measured, host clock (sensor timestamp when usable)
         var arrival: Double // when it reached us
+        var bud = 0 // which earbud measured it: 0 unknown, 1 left, 2 right (they sit mirrored)
     }
 
     private let manager = CMHeadphoneMotionManager()
@@ -55,7 +56,9 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
             let sample = Sample(q: simd_normalize(simd_quatd(ix: q.x, iy: q.y, iz: q.z, r: q.w)),
                                 rate: SIMD3(m.rotationRate.x, m.rotationRate.y, m.rotationRate.z),
                                 angles: SIMD3(m.attitude.yaw, m.attitude.pitch, m.attitude.roll),
-                                time: sensorOK ? m.timestamp : arrival, arrival: arrival)
+                                time: sensorOK ? m.timestamp : arrival, arrival: arrival,
+                                // Motion comes from one bud at a time; taking it out switches to the other.
+                                bud: m.sensorLocation == .headphoneLeft ? 1 : m.sensorLocation == .headphoneRight ? 2 : 0)
             self.lock.lock()
             self.usesSensorClock = sensorOK
             self.last = sample
@@ -118,6 +121,42 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
     func headphoneMotionManagerDidDisconnect(_ manager: CMHeadphoneMotionManager) {
         lock.lock(); last = nil; pending.removeAll(); lock.unlock()
     }
+
+    /// Seconds since the last sample (infinity if none yet).
+    var dataAge: Double {
+        lock.lock(); defer { lock.unlock() }
+        return last.map { CACurrentMediaTime() - $0.arrival } ?? .infinity
+    }
+
+    private var lastRestart = 0.0
+
+    /// Keeps asking for motion while it isn't arriving: macOS only delivers it once the AirPods
+    /// are connected and the sound output, which can happen long after launch. Called every second.
+    func keepAlive() {
+        guard dataAge > 3, CACurrentMediaTime() - lastRestart > 5 else { return }
+        lastRestart = CACurrentMediaTime()
+        stop()
+        start()
+    }
+
+    /// Why no motion is arriving, for the message card (nil while it arrives).
+    func problem(outputIsBluetooth: Bool) -> (title: String, message: String)? {
+        guard dataAge > 1 else { return nil }
+        switch CMHeadphoneMotionManager.authorizationStatus() {
+        case .denied, .restricted:
+            return ("Motion access is off", "Allow RayNeoPin in System Settings › Privacy & Security › Motion & Fitness.")
+        case .notDetermined:
+            return ("Allow motion access", "macOS asks the first time the AirPods send motion. Keep them in your ears.")
+        default: break
+        }
+        if !outputIsBluetooth {
+            return ("AirPods aren't the sound output", "Choose them in Control Center › Sound. Head tracking follows the sound output.")
+        }
+        if !isAvailable {
+            return ("These headphones have no head tracking", "Use AirPods Pro, AirPods 3 or 4, AirPods Max or Beats Fit Pro.")
+        }
+        return ("Waiting for AirPods motion", "Keep both AirPods in your ears. Tracking with the glasses meanwhile.")
+    }
 }
 
 func wrapAngle(_ a: Double) -> Double { atan2(sin(a), cos(a)) }
@@ -150,44 +189,80 @@ func solveRotation(_ pairs: [(a: SIMD3<Double>, b: SIMD3<Double>)]) -> simd_quat
 
 /// Learns, from your own head movements, everything needed to turn AirPods attitude into the
 /// glasses' frame:
-///  - `lag`: AirPods sample time → matching glasses time (Bluetooth/clock offset), by correlating
-///    rotation speeds, which doesn't depend on how the axes line up;
+///  - `lag`: AirPods sample time → matching glasses time (Bluetooth/clock offset);
 ///  - `inverted`: whether CMAttitude's quaternion is body→world or world→body, checked against
 ///    the AirPods' own gyro;
 ///  - `X`: rotation from the glasses' body frame to the AirPods' (they sit tilted in the ears);
 ///  - `W`: rotation from the AirPods' world frame to the glasses'.
 /// Then glasses orientation = W · Ra · X.
+///
+/// The raw AirPods motion is kept, not pairs matched at the time: every solve re-pairs it with the
+/// glasses' history at the current delay estimate, and the delay itself is chosen as the one at
+/// which the two gyros agree best once rotated onto each other. A wrong early delay can't spoil
+/// the data, which used to leave the calibration stuck.
 struct AirPodsCalibration {
     private(set) var lag = 0.0
-    private(set) var lagCorrelation = 0.0
+    private(set) var lagCorrelation = 0.0 // 1 − fit error at the chosen delay, for the overlay
     private(set) var inverted = false
     private(set) var X: simd_quatd?
     private(set) var W: simd_quatd?
     private(set) var fitError = 1.0 // rms residual / mean rate (0 = perfect)
     private(set) var pairCount = 0
     private(set) var jumps = 0
+    /// Guided calibration: one turn left and right, then one nod up and down, measured on the
+    /// glasses. Two perpendicular rotations are exactly what pins down how the AirPods sit
+    /// (Wahba's problem needs two non-parallel axes); the glasses check every AirPods sample.
+    enum Phase: String { case turn, nod, finishing, done }
+    private(set) var phase = Phase.turn
+    /// How much of the turn (left and right) and the nod (up and down) is done, 0…1 each.
+    private(set) var turned = 0.0
+    private(set) var nodded = 0.0
+    static let sweepYaw = 20 * Double.pi / 180 // each side
+    static let sweepPitch = 12 * Double.pi / 180 // up and down
+    private var sweepRef: (yaw: Double, pitch: Double)?
+    private var yawRange = (lo: 0.0, hi: 0.0)
+    private var pitchRange = (lo: 0.0, hi: 0.0)
+    private var airPodsRef: simd_quatd?
+    /// Each side of the guided movement, 0…1, filled only as far as both the glasses and the
+    /// AirPods agree the head turned that way.
+    private(set) var left = 0.0, right = 0.0, up = 0.0, down = 0.0
+    /// Calibration per earbud, since motion comes from one bud at a time and they sit mirrored.
+    private var xByBud: [Int: simd_quatd] = [:]
+    private var bud = 0
+    private(set) var budSwitches = 0
+    private(set) var gaps = 0
     /// Bumped whenever W is recomputed, so users of the AirPods heading can re-reference.
     private(set) var wVersion = 0
     private var wStale = false // recompute W at the next sample, keeping the old one meanwhile
     private var recentAgreement: [Bool] = [] // last 25 moving samples: did they match the glasses?
-    private var gate = true // reject disagreeing pairs; off while relearning after a reseat
+    private var gate = true // reject disagreeing samples; off while relearning after a reseat
     private(set) var reseats = 0
+    private(set) var restarts = 0
 
-    private var speeds: [(t: Double, w: Double)] = []
-    private var pairs: [(a: SIMD3<Double>, b: SIMD3<Double>)] = []
+    /// AirPods samples taken while turning: when, and their rotation rate.
+    private var moving: [(t: Double, rate: SIMD3<Double>)] = []
     private var lastSample: Headphones.Sample?
     private var conventionScore = 0.0
-    private var lastLagSolve = 0.0
-    private var newPairs = 0
+    private var newSamples = 0
+    private var poorSolves = 0
     private var xAtW: simd_quatd? // the X that W was computed with
+    private var relearning = false // after a reseat: keep the old result until the new one is ready
+    private var peak = 0.0 // the progress bar only moves forward
+    private(set) var glitches = 0 // samples skipped because their speed didn't match the glasses
     private(set) var seeded = false // X/convention/lag came from a previous session
 
     /// What's worth keeping between sessions for the same AirPods (W depends on the session).
-    struct Saved: Codable { var x: [Double]; var inverted: Bool; var lag: Double }
+    struct Saved: Codable {
+        var x: [Double]; var inverted: Bool; var lag: Double
+        var buds: [String: [Double]]? // per earbud ("1" left, "2" right)
+    }
 
     var saved: Saved? {
         guard let X, fitError < 0.3, pairCount >= AirPodsCalibration.neededPairs else { return nil }
-        return Saved(x: [X.vector.x, X.vector.y, X.vector.z, X.vector.w], inverted: inverted, lag: lag)
+        func v(_ q: simd_quatd) -> [Double] { [q.vector.x, q.vector.y, q.vector.z, q.vector.w] }
+        var buds = xByBud.mapValues(v)
+        buds[bud] = v(X)
+        return Saved(x: v(X), inverted: inverted, lag: lag, buds: Dictionary(uniqueKeysWithValues: buds.map { (String($0.key), $0.value) }))
     }
 
     /// Start from a previous session's result; it keeps refining from new movement.
@@ -199,17 +274,59 @@ struct AirPodsCalibration {
         lag = s.lag
         fitError = 0.2
         pairCount = AirPodsCalibration.neededPairs
+        turned = 1
+        nodded = 1
+        phase = .done
         seeded = true
+        calibrated = true
+        for (k, x) in s.buds ?? [:] where x.count == 4 {
+            if let b = Int(k) { xByBud[b] = simd_normalize(simd_quatd(vector: SIMD4(x[0], x[1], x[2], x[3]))) }
+        }
     }
 
-    /// Moving samples (both devices turning faster than ~14 °/s) needed: about 3 s of head turning.
-    static let neededPairs = 60
+    /// Moving samples (both devices turning faster than ~14 °/s) needed: about 2–3 s of movement.
+    static let neededPairs = 50
     private(set) var lastPairTime = 0.0
 
-    var ready: Bool { X != nil && W != nil && fitError < 0.4 && pairCount >= AirPodsCalibration.neededPairs }
+    /// Once calibrated it stays calibrated: only a recalibration, an unknown earbud taking over or
+    /// a reseat (which keeps the old result until the new one is solved) change that. Re-checking
+    /// against the last ~25 s of movement used to "lose" it whenever you sat still for a while.
+    var ready: Bool { calibrated && X != nil && W != nil }
+    private(set) var calibrated = false
 
-    /// 0…1 for the calibration progress bar.
-    var progress: Double { ready ? 1 : min(Double(pairs.count) / Double(AirPodsCalibration.neededPairs), 0.95) }
+    private var conditionsMet: Bool {
+        X != nil && W != nil && fitError < 0.4 && pairCount >= AirPodsCalibration.neededPairs && turned >= 1 && nodded >= 1
+            && (phase == .finishing || phase == .done)
+    }
+
+    /// 0…1 for the progress bar: collecting movement in both directions, then the fit quality (so it
+    /// keeps moving instead of sitting at 95% while the fit is still poor).
+    var progress: Double { ready ? 1 : peak }
+
+    private var rawProgress: Double {
+        switch phase {
+        case .turn: return 0.45 * turned
+        case .nod: return 0.45 + 0.45 * nodded
+        case .finishing, .done:
+            let enough = min(Double(pairCount) / Double(AirPodsCalibration.neededPairs), 1)
+            return 0.9 + 0.09 * enough * min(max((0.8 - fitError) / 0.4, 0), 1)
+        }
+    }
+
+    /// Enough movement collected but the fit isn't good yet (moving too jerkily, or AirPods loose).
+    var fitting: Bool { !ready && pairCount >= AirPodsCalibration.neededPairs && turned >= 1 && nodded >= 1 }
+
+    /// What to do next, for the calibration hint.
+    var hint: String {
+        switch phase {
+        // Yaw grows to the left (counterclockwise seen from above), so the left side is the high end.
+        case .turn: return left < 1 ? "step 1 of 2: turn your head to the LEFT" : "step 1 of 2: now to the RIGHT"
+        case .nod: return up < 1 ? "step 2 of 2: look UP" : "step 2 of 2: now look DOWN"
+        case .finishing: return fitError >= 0.4 && pairCount >= AirPodsCalibration.neededPairs
+            ? "once more, a bit slower: left, right, up, down" : "checking against the glasses — keep moving gently"
+        case .done: return ""
+        }
+    }
 
     mutating func reset() { self = AirPodsCalibration() }
 
@@ -234,13 +351,25 @@ struct AirPodsCalibration {
         for s in samples {
             defer { lastSample = s }
             let speed = simd_length(s.rate)
-            speeds.append((s.time, speed))
+            if s.bud != bud { switchBud(to: s.bud) }
 
+            if let prev = lastSample, s.time - prev.time >= 0.2 {
+                // After a gap (reconnect, updates restarted) the AirPods' reference frame may have reset.
+                gaps += 1
+                wStale = true
+            }
             if let prev = lastSample, s.time > prev.time {
                 let dt = s.time - prev.time
-                // A big instant jump means the AirPods switched buds or were reseated.
-                let jump = (prev.q.inverse * s.q).angle
-                if min(jump, 2 * .pi - jump) > 0.5, dt < 0.2 { jumps += 1; wStale = true }
+                // Between two samples the attitude must turn by what the AirPods' own gyro measured. Any
+                // more is a jump of their reference, not motion: macOS re-centers AirPods yaw whenever
+                // an app starts Spatial Audio, and buds get swapped or reseated. Re-take the reference
+                // at once instead of letting the drift correction slowly drag the screen over.
+                let turned = (prev.q.inverse * s.q).angle
+                let measured = simd_length((s.rate + prev.rate) / 2) * dt
+                if dt < 0.2, abs(min(turned, 2 * .pi - turned) - measured) > max(2 * .pi / 180, 0.3 * measured) {
+                    jumps += 1
+                    wStale = true
+                }
                 // Convention: the body rate implied by consecutive quaternions should match rotationRate.
                 if speed > 0.3, dt < 0.1 {
                     let asBodyToWorld = s.q.angularVelocity(from: prev.q, dt: dt)
@@ -251,90 +380,183 @@ struct AirPodsCalibration {
             }
 
             guard let g = glasses(glassesTime(s)) else { continue }
-            // Only pairs where both devices really turned together (once X is known, they must agree).
-            // A single disagreement is a glitch; most recent ones disagreeing means the AirPods were
-            // reseated in the ears: X changed, so forget the old pairs and learn it again.
-            let agrees = X.map { simd_length(s.rate - $0.act(g.omega)) < max(0.35, 0.5 * simd_length(g.omega)) } ?? true
-            if speed > 0.25, simd_length(g.omega) > 0.25, X != nil, gate {
+            trackSweeps(g.q, airPods: s.q)
+            // Once X is known both devices must agree. A single disagreement is a glitch; most recent
+            // ones disagreeing means the AirPods were reseated in the ears: X changed, learn it again.
+            // Only checked against a finished calibration: an early, rough X would make good samples
+            // look wrong (that used to throw the progress back to 0 again and again).
+            let agrees = !ready || X.map { simd_length(s.rate - $0.act(g.omega)) < max(0.35, 0.5 * simd_length(g.omega)) } ?? true
+            if speed > 0.25, simd_length(g.omega) > 0.25, ready, gate {
                 recentAgreement.append(agrees)
                 if recentAgreement.count > 25 { recentAgreement.removeFirst() }
                 if recentAgreement.count == 25, recentAgreement.filter({ !$0 }).count > 15 {
-                    pairs.removeAll()
+                    // Keep using the old result until the new one is solved from fresh movement.
+                    moving.removeAll()
                     recentAgreement.removeAll()
-                    newPairs = 0
+                    newSamples = 0
                     gate = false
                     seeded = false
+                    relearning = true
                     reseats += 1
                 }
             }
-            if speed > 0.25, simd_length(g.omega) > 0.25, agrees || !gate {
-                pairs.append((g.omega, s.rate))
+            if speed > 0.25, agrees || !gate {
+                moving.append((s.time, s.rate))
                 lastPairTime = s.arrival
-                if pairs.count > 3000 { pairs.removeFirst(pairs.count - 3000) }
-                newPairs += 1
+                // ~25 s of turning, within the glasses' 30 s history: bad early data ages out.
+                if moving.count > 600 { moving.removeFirst(moving.count - 600) }
+                if let first = moving.first, s.time - first.t > 25 { moving.removeAll { s.time - $0.t > 25 } }
+                newSamples += 1
             }
             // Refinements never make the calibration drop out: the old W stays until replaced.
-            if W == nil || wStale, let X, fitError < 0.4 {
+            // Once calibrated, X is trusted: a reference jump is always re-taken, whatever the latest fit.
+            if W == nil || wStale, let X, fitError < 0.4 || calibrated {
                 W = simd_normalize(g.q * X.inverse * bodyToWorld(s).inverse)
                 xAtW = X
                 wStale = false
                 wVersion += 1
             }
         }
-        let newest = speeds.last?.t ?? 0
-        speeds.removeAll { $0.t < newest - 4 }
+        if newSamples >= 15 {
+            newSamples = 0
+            solve(glasses)
+        }
+    }
 
-        if newPairs >= 20 {
-            newPairs = 0
-            pairCount = pairs.count
-            // A seeded X is only replaced once there is as much fresh data as it was built from.
-            if !seeded || pairs.count >= AirPodsCalibration.neededPairs, let x = solveRotation(pairs) {
-                let rms = sqrt(pairs.reduce(0) { $0 + simd_length_squared($1.b - x.act($1.a)) } / Double(pairs.count))
-                let mean = pairs.reduce(0) { $0 + simd_length($1.b) } / Double(pairs.count)
-                fitError = rms / max(mean, 1e-6)
-                if X == nil || fitError < 0.4 { X = x }
-                if fitError < 0.4 { gate = true }
-                // W depends on X: redo it while X is still improving.
-                if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
-                   2 * .pi - (old.inverse * X).angle > 0.005 { wStale = true }
+    /// Glasses/AirPods rate pairs at delay `L`, both turning.
+    private func pairs(_ L: Double, _ from: ArraySlice<(t: Double, rate: SIMD3<Double>)>,
+                       _ glasses: (Double) -> PoseSample?) -> [(a: SIMD3<Double>, b: SIMD3<Double>)] {
+        from.compactMap { m in
+            guard let g = glasses(m.t + L) else { return nil }
+            let gs = simd_length(g.omega), a = simd_length(m.rate)
+            // Rotating a vector never changes its length: the AirPods must turn as fast as the glasses,
+            // whatever their tilt in the ears. A sample that doesn't is a glitch (a bud moving, a
+            // Bluetooth hiccup) and is skipped, from the very first sample.
+            guard gs > 0.25, abs(a - gs) < max(0.3, 0.35 * gs) else { return nil }
+            return (g.omega, m.rate)
+        }
+    }
+
+    /// Rotation from glasses to AirPods rates, refit without the worst 20% (glitches), and its
+    /// relative rms error.
+    private func fit(_ p: [(a: SIMD3<Double>, b: SIMD3<Double>)]) -> (x: simd_quatd, error: Double)? {
+        guard p.count >= 10, let first = solveRotation(p) else { return nil }
+        let ranked = p.sorted { simd_length_squared($0.b - first.act($0.a)) < simd_length_squared($1.b - first.act($1.a)) }
+        let kept = Array(ranked.prefix(max(10, p.count * 4 / 5)))
+        let x = solveRotation(kept) ?? first
+        let rms = sqrt(kept.reduce(0) { $0 + simd_length_squared($1.b - x.act($1.a)) } / Double(kept.count))
+        let mean = kept.reduce(0) { $0 + simd_length($1.b) } / Double(kept.count)
+        return (x, rms / max(mean, 1e-6))
+    }
+
+    private mutating func solve(_ glasses: (Double) -> PoseSample?) {
+        // Delay: where the two gyros agree best (−50…+300 ms, then refined to 2.5 ms), on recent motion.
+        let recent = moving.suffix(250)
+        if recent.count >= 30 {
+            var best = (lag: lag, error: Double.infinity)
+            for step in -5...30 {
+                let L = Double(step) * 0.01
+                if let f = fit(pairs(L, recent, glasses)), f.error < best.error { best = (L, f.error) }
             }
+            let coarse = best.lag
+            for step in -4...4 where step != 0 {
+                let L = coarse + Double(step) * 0.0025
+                if let f = fit(pairs(L, recent, glasses)), f.error < best.error { best = (L, f.error) }
+            }
+            if best.error.isFinite { lag = best.lag; lagCorrelation = max(0, 1 - best.error) }
         }
-        if let t = speeds.last?.t, t - lastLagSolve > 1 {
-            lastLagSolve = t
-            solveLag(glasses)
+
+        let all = pairs(lag, moving[...], glasses)
+        glitches = moving.count - all.count
+        // After a reseat the previous result keeps working until there's enough new movement.
+        if relearning, all.count < AirPodsCalibration.neededPairs { return }
+        // Calibrated and not much recent movement: keep the result, don't re-judge it on scraps.
+        if calibrated, !relearning, all.count < AirPodsCalibration.neededPairs { return }
+        relearning = false
+        pairCount = all.count
+        // A seeded X is only replaced once there is as much fresh data as it was built from.
+        guard !seeded || all.count >= AirPodsCalibration.neededPairs, let f = fit(all) else { return }
+        fitError = f.error
+        // Still poor after ~10 s of extra movement: start collecting again rather than stay stuck.
+        if all.count >= AirPodsCalibration.neededPairs, fitError >= 0.4, X == nil || W == nil {
+            poorSolves += 1
+            // Drop the older half, never everything, so the bar doesn't start over.
+            if poorSolves >= 15 { moving.removeFirst(moving.count / 2); poorSolves = 0; restarts += 1 }
+        } else {
+            poorSolves = 0
         }
+        if X == nil || fitError < 0.4 { X = f.x }
+        if fitError < 0.4 { gate = true }
+        // W depends on X: redo it while X is still improving.
+        if let X, let old = xAtW, (old.inverse * X).angle.truncatingRemainder(dividingBy: 2 * .pi) > 0.005,
+           2 * .pi - (old.inverse * X).angle > 0.005 { wStale = true }
+        if conditionsMet { calibrated = true }
+        if ready { phase = .done; xByBud[bud] = X }
+        peak = max(peak, min(rawProgress, 0.99))
     }
 
-    /// Picks the offset (−50…+300 ms) at which AirPods and glasses rotation speeds correlate best.
-    private mutating func solveLag(_ glasses: (Double) -> PoseSample?) {
-        let recent = speeds.filter { $0.t > (speeds.last?.t ?? 0) - 3 }
-        guard recent.count > 30 else { return }
-        let mean = recent.reduce(0) { $0 + $1.w } / Double(recent.count)
-        let variance = recent.reduce(0) { $0 + ($1.w - mean) * ($1.w - mean) } / Double(recent.count)
-        guard variance > 0.01 else { return } // head too still to tell
-        var best = (lag: lag, r: -1.0)
-        for step in -5...30 {
-            let L = Double(step) * 0.01
-            var xs: [Double] = [], ys: [Double] = []
-            for s in recent { if let g = glasses(s.t + L) { xs.append(s.w); ys.append(simd_length(g.omega)) } }
-            guard xs.count > 20 else { continue }
-            let r = pearson(xs, ys)
-            if r > best.r { best = (L, r) }
-        }
-        if best.r > 0.6 { lag = best.lag; lagCorrelation = best.r }
+    /// Starts the guided movement over from where the head points now (recenter).
+    mutating func restartSweeps() {
+        guard phase == .turn || phase == .nod else { return }
+        sweepRef = nil
+        airPodsRef = nil
+        yawRange = (0, 0)
+        pitchRange = (0, 0)
+        if phase == .turn { left = 0; right = 0; turned = 0 } else { up = 0; down = 0; nodded = 0 }
     }
-}
 
-func pearson(_ x: [Double], _ y: [Double]) -> Double {
-    let n = Double(x.count)
-    let mx = x.reduce(0, +) / n, my = y.reduce(0, +) / n
-    var sxy = 0.0, sxx = 0.0, syy = 0.0
-    for i in 0..<x.count {
-        sxy += (x[i] - mx) * (y[i] - my)
-        sxx += (x[i] - mx) * (x[i] - mx)
-        syy += (y[i] - my) * (y[i] - my)
+    /// Follows the glasses through the guided movement: the turn counts once the head has been 20°
+    /// to each side of where it started, the nod once it has been 12° up and down.
+    private mutating func trackSweeps(_ q: simd_quatd, airPods: simd_quatd) {
+        guard phase == .turn || phase == .nod else { return }
+        let yp = q.yawPitch
+        guard let ref = sweepRef, let apRef = airPodsRef else { sweepRef = (yp.yaw, yp.pitch); airPodsRef = airPods; return }
+        // Glasses: signed yaw (left is +) and pitch (up is +) from where it started. AirPods: how far
+        // they rotated, whatever their tilt in the ears. A side only fills as far as both agree.
+        let dy = wrapAngle(yp.yaw - ref.yaw), dp = yp.pitch - ref.pitch
+        let ap = shortestAngle(apRef, airPods)
+        yawRange = (min(yawRange.lo, dy), max(yawRange.hi, dy))
+        pitchRange = (min(pitchRange.lo, dp), max(pitchRange.hi, dp))
+        if phase == .turn {
+            let both = min(abs(dy), ap) / AirPodsCalibration.sweepYaw
+            if dy > 0 { left = max(left, min(both, 1)) } else { right = max(right, min(both, 1)) }
+        } else {
+            let both = min(abs(dp), ap) / AirPodsCalibration.sweepPitch
+            if dp > 0 { up = max(up, min(both, 1)) } else { down = max(down, min(both, 1)) }
+        }
+        turned = (left + right) / 2
+        nodded = (up + down) / 2
+        if phase == .turn, turned >= 1 { phase = .nod }
+        if phase == .nod, nodded >= 1 { phase = .finishing }
+        peak = max(peak, min(rawProgress, 0.99))
     }
-    return sxx > 0 && syy > 0 ? sxy / sqrt(sxx * syy) : 0
+
+    /// The other earbud took over: use its own calibration if known, otherwise learn it while the
+    /// glasses track alone.
+    private mutating func switchBud(to new: Int) {
+        if let X, ready { xByBud[bud] = X }
+        let old = bud
+        bud = new
+        // First sample of the session: adopt this bud's saved calibration, if any.
+        guard old != 0 else { if let known = xByBud[new] { X = known }; return }
+        budSwitches += 1
+        moving.removeAll()
+        newSamples = 0
+        recentAgreement.removeAll()
+        if let known = xByBud[new] {
+            X = known
+            wStale = true
+        } else {
+            X = nil
+            W = nil
+            calibrated = false
+            fitError = 1
+            pairCount = 0
+            phase = .finishing // the guided movement was already done; just keep moving
+            turned = 1
+            nodded = 1
+        }
+    }
 }
 
 /// Keeps the glasses' heading at a constant offset from the AirPods' heading.
