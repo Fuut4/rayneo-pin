@@ -728,7 +728,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
 
     private var airPodsProblem: String?
     private var airPodsConnecting = false
-    private var airPodsAnnounced = false // render thread: "glasses tracking only" was shown
+    private var glassesOnlyShown = false // render thread: "glasses tracking only" was shown
     private var airPodsMissingSince: Double? // render thread
     private var airPodsCheckedAt = 0.0
 
@@ -952,13 +952,13 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             } else if missingFor >= 3, missingFor <= 7 {
                 airPodsCard = OverlayState(tone: .info, icon: "eyeglasses", title: "Glasses tracking only",
                                            message: problem ?? "Your AirPods aren't sending head motion.")
-                airPodsAnnounced = true
+                glassesOnlyShown = true
             } else {
                 airPodsCard = nil
             }
             // Back after an announcement: say so once.
-            if airpods != nil, airPodsAnnounced {
-                airPodsAnnounced = false
+            if airpods != nil, glassesOnlyShown {
+                glassesOnlyShown = false
                 show("AirPods head tracking resumed", seconds: 2.5, icon: "airpodspro", tone: .success)
             }
         }
