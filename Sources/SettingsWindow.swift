@@ -446,9 +446,9 @@ struct SettingsView: View {
                                     .font(.headline)
                             }
                             ProgressView(value: st.progress) { Text("Overall") }
-                            CenterBar(title: "Step 1", leftLabel: "Left", rightLabel: "Right", left: st.left, right: st.right,
+                            CenterBar(title: "Turn", leftLabel: "Left", rightLabel: "Right", left: st.left, right: st.right,
                                       active: st.phase == .turn)
-                            CenterBar(title: "Step 2", leftLabel: "Up", rightLabel: "Down", left: st.up, right: st.down,
+                            CenterBar(title: "Nod", leftLabel: "Up", rightLabel: "Down", left: st.up, right: st.down,
                                       active: st.phase == .nod)
                             Text(String(format: "Bluetooth delay %.0f ms · fit error %.0f%% · glitches skipped %d", st.lag * 1000, st.fitError * 100, st.glitches))
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -648,10 +648,10 @@ enum SettingsSnapshot {
         }
         // The message cards, as they appear in the glasses.
         let cards: [(String, OverlayState)] = [
-            ("airpods-step1", OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 1 of 2",
+            ("airpods-step1", OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods",
                                            message: "Now turn your head to the right.",
                                            bar: .centered(left: 1, right: 0.4, leftLabel: "Left", rightLabel: "Right"), detail: "32%")),
-            ("airpods-step2", OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 2 of 2",
+            ("airpods-step2", OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods",
                                            message: "Look up.", bar: .centered(left: 0.3, right: 0, leftLabel: "Up", rightLabel: "Down"), detail: "52%")),
             ("gyro", OverlayState(tone: .progress, icon: "gyroscope", title: "Calibrating the gyroscope", step: "Hold still",
                                   message: "Put the glasses on a flat surface and don't touch them.", bar: .linear(0.6), detail: "60%")),

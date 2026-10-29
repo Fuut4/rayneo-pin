@@ -923,7 +923,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard let self, let start = self.yawScaleStart else { return }
                 let turned = abs(degrees(self.imu.turned - start))
                 self.renderer?.showCard(OverlayState(tone: .progress, icon: "arrow.triangle.2.circlepath", title: "Calibrating turn sensitivity",
-                                                     step: turned < 300 ? "Step 1 of 2" : "Step 2 of 2",
                                                      message: turned < 300 ? "Turn around once, either way, until you face the same point again."
                                                                            : "Face the starting point and press ⌃⌥G.",
                                                      bar: .linear(min(turned / 360, 1)), detail: String(format: "%.0f°", turned)), seconds: 1)
@@ -1335,7 +1334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let seconds = Int(Date().timeIntervalSince(started))
             self.updateProgress(step: fraction[0], of: fraction[1], String(parts[1]), detail: "\(seconds) s")
             self.renderer?.showCard(OverlayState(tone: .progress, icon: "arrow.down.circle.fill", title: "Updating RayNeoPin",
-                                                     step: "Step \(fraction[0]) of \(fraction[1])", message: String(parts[1]),
+                                                     message: String(parts[1]),
                                                      detail: "\(seconds) s"), seconds: 2)
         }
         // The script builds and installs a new version, then this app restarts into it.
@@ -1381,7 +1380,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let state = OverlayState(tone: failed ? .warning : finished ? .success : .progress,
                                  icon: failed ? "exclamationmark.triangle.fill" : finished ? "checkmark.circle.fill" : "arrow.down.circle.fill",
                                  title: failed ? "Update failed" : finished ? text : "Updating RayNeoPin",
-                                 step: finished || failed || step == 0 ? nil : "Step \(step) of \(total)",
                                  message: failed ? text : finished ? nil : text,
                                  bar: failed ? .none : .linear(value), detail: detail.isEmpty ? nil : detail)
         macCard.show(state, hideAfter: finished || failed ? 6 : nil)

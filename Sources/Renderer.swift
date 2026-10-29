@@ -888,28 +888,30 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             }
         }
         airPodsCalibrating = calibrating
-        // A sound per finished step of the guided calibration: nobody reads while turning their head.
-        if calibration.phase != lastPhase {
-            if calibrating, calibration.phase == .nod || calibration.phase == .finishing { DispatchQueue.main.async { NSSound(named: "Pop")?.play() } }
-            lastPhase = calibration.phase
+        // A sound for each side of the guided calibration as it fills: nobody reads while turning
+        // their head. Left and right come from that side; up is higher, down lower.
+        let sides = [calibration.left, calibration.right, calibration.up, calibration.down]
+        if calibrating {
+            for (i, side) in CalibrationSound.allCases.enumerated() where sides[i] >= 1 && lastSides[i] < 1 { side.play() }
         }
+        lastSides = sides
         if calibrating {
             // One bar, filling outward from the center: left/right in step 1, up/down in step 2.
             let pct = "\(Int(calibration.progress * 100))%"
             switch calibration.phase {
             case .turn:
-                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 1 of 2",
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods",
                                            message: calibration.left < 1 ? "Turn your head to the left." : "Now turn your head to the right.",
                                            bar: .centered(left: calibration.left, right: calibration.right, leftLabel: "Left", rightLabel: "Right"),
                                            detail: pct)
             case .nod:
-                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Step 2 of 2",
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods",
                                            message: calibration.up < 1 ? "Look up." : "Now look down.",
                                            bar: .centered(left: calibration.up, right: calibration.down, leftLabel: "Up", rightLabel: "Down"),
                                            detail: pct)
             case .finishing, .done:
                 let retry = calibration.fitError >= 0.4 && calibration.pairCount >= AirPodsCalibration.neededPairs
-                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods", step: "Checking",
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Calibrating AirPods",
                                            message: retry ? "Once more, a little slower: left, right, up, down."
                                                           : "Comparing with the glasses. Keep moving gently.",
                                            bar: .linear(calibration.progress), detail: pct)
@@ -1090,7 +1092,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     // MARK: Telemetry
 
     private var lastTelemetry = 0.0
-    private var lastPhase = AirPodsCalibration.Phase.turn
+    private var lastSides = [1.0, 1, 1, 1]
     private var tLastBud = (switches: 0, gaps: 0, phase: AirPodsCalibration.Phase.turn)
     private var tFrames = 0, tDrawn = 0, tWindow = 0.0, tFPS = 0.0, tDrawnFPS = 0.0
     private var tLast = (ready: false, reseats: 0, restarts: 0, ignored: false, tracking: TrackingMode.both, connected: false, asleep: false, jumps: 0)

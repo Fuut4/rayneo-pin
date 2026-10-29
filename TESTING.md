@@ -1,22 +1,8 @@
-# Test branch: `test/everything`
+# Options and testing
 
-This branch has every idea from the research pass. Each one has its own switch, so you can turn it on and off and compare. Keep what helps; the rest gets dropped before merging into `main`.
+Every option below has its own switch in **Settings**, so you can turn it on and off and compare. Developer mode (⌃⌥D) shows most of the values live.
 
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/test/everything/install.sh | RAYNEOPIN_BRANCH=test/everything zsh
-```
-
-**Check for Updates…** now stays on this branch. To go back to `main`:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Fuut4/rayneo-pin/main/install.sh | RAYNEOPIN_BRANCH=main zsh
-```
-
-Your settings carry over both ways. Everything new lives in four new menus: **Readability**, **Anchoring**, **Drift & Accuracy**, **Latency & CPU**. Developer mode (⌃⌥D) shows most of the new values live.
-
-## New hotkeys
+## Hotkeys
 
 | Hotkey | Action |
 |---|---|
@@ -37,20 +23,20 @@ Your settings carry over both ways. Everything new lives in four new menus: **Re
 | Crisp Retina (Virtual Display, text drawn at 2×) | 0.10 / 0.17 |
 | Crisp + Pixel Lock, holding still | 0.04 / 0.08 |
 
-The halo came from resizing in linear light. Font renderers, macOS included, blend text in gamma space. **Readability › Resize Text Like macOS** fixes it, and is on by default.
+The halo came from resizing in linear light. Font renderers, macOS included, blend text in gamma space. **Text Clarity › Resize Text Like macOS** fixes it, and is on by default.
 
 ## What's in it
 
-On = enabled by default on this branch.
+On = enabled by default.
 
 ### Readability
 
 | Option | Default | What to look for |
 |---|---|---|
-| Sharpening Style: **Adaptive (RCAS)** / Unsharp Mask | RCAS | AMD's per-pixel sharpening; it can't draw halos. The old unsharp mask is still there, now clamped to the neighbouring pixels so it can't overshoot. Compare at High sharpness. |
+| Sharpening Style: Adaptive (RCAS) / **Unsharp Mask** | Unsharp | AMD's per-pixel sharpening; it can't draw halos. The unsharp mask is clamped to the neighbouring pixels so it can't overshoot, and scored best in the render lab. Compare at High sharpness. |
 | Sharpen Only When Still | on | Text shouldn't "crawl" while you turn. It sharpens back once you stop. |
 | Smart Sampling | on | Bicubic (Catmull-Rom) when the screen is enlarged, 4× rotated-grid sampling when shrunk. Look at small text at zoom 120% and 70%. |
-| Pixel Lock When Still | on | Near 100% scale the zoom snaps to exactly 1:1. When you hold still and look at the screen roughly straight on, it eases onto the pixel grid in ¼ s with no resampling, so text should look like a real monitor. Developer mode: `pixel lock 100%`, `1:1 fix ×…`. Best with Virtual Display › Crisp. In Glasses Screen mode it only engages around 120% zoom. Watch for a faint "settle" of the edges when it engages; tell me if it bothers you. |
+| Pixel Lock When Still | on | Near 100% scale the zoom snaps to exactly 1:1. When you hold still and look at the screen roughly straight on, it eases onto the pixel grid in ¼ s with no resampling, so text should look like a real monitor. Developer mode: `pixel lock 100%`, `1:1 fix ×…`. Best with Virtual Display › Crisp. In Glasses Screen mode it only engages around 120% zoom. Watch for a faint "settle" of the edges when it engages; open an issue if it bothers you. |
 | Curved Ultrawide Screen | on | 21:9 and wider bend around you, so the edges are as far away and as sharp as the middle. |
 | Warmth / Brightness | off / 100% | Night comfort. Software only: I didn't find RayNeo's hardware brightness command. |
 
@@ -61,7 +47,7 @@ On = enabled by default on this branch.
 | Presets | — | **Desk**: fixed in space. **Sofa**: Smooth Follow + roll locked. **Lying Down**: Smooth Follow + pitch and roll locked. |
 | Smooth Follow + Dead Zone | off, 20° | The screen stays put until you look past the dead zone, then glides back in front of you. Hides drift. |
 | Recenter After Looking Away | off | Look more than ~35° away for 10 s and then hold still: it recenters there. |
-| Double-Tap to Recenter | on | Two sharp taps on the frame. Thresholds came from Rokid hardware: if it misses taps or fires on its own, send me `taps / peak jerk / peak Δa` from developer mode after tapping. |
+| Double-Tap to Recenter | on | Two sharp taps on the frame. Thresholds came from Rokid hardware: if it misses taps or fires on its own, tap, then include `taps / peak jerk / peak Δa` from developer mode in an issue. |
 | Neck Saver | off | 1.5× means turning 30° shows 45°. |
 | Screen Height | 0° | ⌃⌥↑ / ⌃⌥↓. |
 | Side Screens | off | Extra 1920×1080 virtual displays left/right of the pinned one, drawn beside it in the glasses. Switches to the Virtual Display setup. Each one is a real macOS display. |
@@ -78,7 +64,7 @@ On = enabled by default on this branch.
 | Calibrate Turn Sensitivity (⌃⌥G) | — | Look at something, press ⌃⌥G, turn around once, look at it again, press ⌃⌥G. It refuses if the turn wasn't whole. |
 | Mac Camera as Drift Reference | off | The Mac's camera tells which way your face points; that never drifts. It learns the direction while you turn, then says "locked on". Developer mode: `CAMERA` line. Works while your face is within ~30° of the camera. The glasses may hide part of your face. |
 | Typing Hint | off | While you type, the screen turns very slowly (≤ 0.15 °/s) so the caret sits where your head points. Weak by design, because your eyes move more than your head. Needs Accessibility. |
-| Probe Glasses Calibration | — | Sends `0x3E` ("read gyro bias" in RayNeo's SDK enum) and nothing that writes. The raw reply appears as `last ack` in developer mode; send it to me. |
+| Probe Glasses Calibration | — | Sends `0x3E` ("read gyro bias" in RayNeo's SDK enum) and nothing that writes. The raw reply appears as `last ack` in developer mode; include it in an issue. |
 
 ### Latency and CPU
 

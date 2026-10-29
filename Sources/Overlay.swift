@@ -3,6 +3,7 @@
 // style and progress bars.
 
 import AppKit
+import AVFoundation
 import SwiftUI
 
 struct OverlayState: Equatable {
@@ -220,6 +221,27 @@ private struct MacCardView: View {
             OverlayCard(state: state, compact: true)
                 .environment(\.colorScheme, .dark)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+    }
+}
+
+/// The AirPods calibration's per-side sounds. Left and right are panned to that ear.
+enum CalibrationSound: CaseIterable {
+    case left, right, up, down
+
+    private static var players: [CalibrationSound: AVAudioPlayer] = [:]
+
+    func play() {
+        DispatchQueue.main.async {
+            if CalibrationSound.players[self] == nil {
+                let name = self == .up ? "Tink" : self == .down ? "Bottle" : "Pop"
+                let p = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: "/System/Library/Sounds/\(name).aiff"))
+                p?.pan = self == .left ? -1 : self == .right ? 1 : 0
+                p?.prepareToPlay()
+                CalibrationSound.players[self] = p
+            }
+            CalibrationSound.players[self]?.currentTime = 0
+            CalibrationSound.players[self]?.play()
         }
     }
 }
