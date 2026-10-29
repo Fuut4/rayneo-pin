@@ -46,6 +46,8 @@ final class Settings {
     /// "virtual" (an extra virtual monitor), or "display"/"window" to mirror something that exists.
     var sourceKind: String { get { d.string(forKey: "setup") ?? "glasses" } set { d.set(newValue, forKey: "setup") } }
     var singleDisplay: Bool { sourceKind == "glasses" || sourceKind == "ultrawide" }
+    /// The AirPods last used for head tracking with this Mac.
+    var usualAirPods: String? { get { d.string(forKey: "usualAirPods") } set { d.set(newValue, forKey: "usualAirPods") } }
     /// AirPods calibration per Bluetooth address.
     func airPodsCalibration(for address: String) -> AirPodsCalibration.Saved? {
         (d.data(forKey: "airpods." + address)).flatMap { try? JSONDecoder().decode(AirPodsCalibration.Saved.self, from: $0) }
@@ -61,7 +63,7 @@ final class Settings {
         "follow": false, "lookAwayRecenter": false, "doubleTap": true,
         "strictAccel": true, "temperatureComp": true, "airPodsBias": true, "airPodsScale": false,
         "cameraDrift": false, "typingDrift": false,
-        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true,
+        "predictFiltered": true, "skipIdle": true, "metalHUD": false, "gammaResample": true, "reclaimAirPods": true,
         // Off until the person chooses otherwise (Privacy.swift).
         "telemetry": false, "uploadTelemetry": false,
     ]
@@ -303,6 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 Task { for c in captures { await c.setResting(resting) } }
                 self.renderer?.setResting(resting)
                 if self.settings.tracking != .glasses { if resting { self.headphones.stop() } else { self.headphones.start() } }
+                if !resting { self.bringBackAirPods(automatic: true) }
                 Telemetry.shared.event(resting ? "resting" : "resumed", time: CACurrentMediaTime())
                 // Taken off (not unplugged): say so on the Mac, briefly.
                 if resting, self.imu.snapshot().connected, Displays.glasses() != nil, self.calibrationTimer == nil {
@@ -314,7 +317,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.renderer?.keepOn(glasses)
             if self.settings.tracking != .glasses, !self.wasAsleep {
                 self.headphones.keepAlive()
-                self.renderer?.setAirPodsProblem(self.headphones.problem(outputIsBluetooth: HeadphoneCatalog.currentOutputAddress() != nil))
+                // Remember the pair in use, so it can be brought back after an iPhone takes it.
+                if self.headphones.latest() != nil, let output = HeadphoneCatalog.currentOutputAddress(), output != self.settings.usualAirPods {
+                    self.settings.usualAirPods = output
+                }
+                self.renderer?.setAirPodsProblem(self.headphones.problem(usual: self.settings.usualAirPods))
             }
             if self.settings.developer { self.renderer?.setDeveloperDisplayInfo(self.developerDisplayInfo()) }
             if self.settings.developer, self.settings.developerOnMac, let panel = self.developerPanel, !NSScreen.screens.contains(where: {
@@ -327,6 +334,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applySetup()
         applyExtras()
         if settings.developer && settings.developerOnMac { showDeveloperPanel(true) }
+        // Launched with the glasses on: bring the AirPods back too, as if they'd just been put on.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, !self.wasAsleep else { return }
+            self.bringBackAirPods(automatic: true)
+        }
     }
 
     func applicationWillTerminate(_ note: Notification) {
@@ -753,6 +765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         trackingMenu.addItem(submenu("AirPods", airPodsMenu))
         trackingMenu.addItem(item("Recalibrate AirPods", #selector(recalibrateAirPods)))
+        trackingMenu.addItem(item("Bring AirPods Back to This Mac", #selector(bringBackAirPodsNow)))
         trackingMenu.addItem(.separator())
         trackingMenu.addItem(item("Calibrate Gyro (glasses on a table)…", #selector(calibrate)))
         rebuildAirPodsMenu()
@@ -1223,6 +1236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
                 // CoreMotion picks the new route up on restart; other AirPods sit differently in the ears.
                 if ok {
+                    self.settings.usualAirPods = device.address.uppercased()
                     self.renderer?.recalibrateAirPods()
                     self.seedAirPodsCalibration()
                 }
@@ -1231,6 +1245,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
     }
+
+    @objc func bringBackAirPodsNow() { bringBackAirPods(automatic: false) }
+
+    /// Makes the usual AirPods this Mac's sound output again (connecting takes them back from an
+    /// iPhone), so their head tracking comes back. Done when the glasses are put on, never in the
+    /// middle of a session: if the iPhone takes them for a call or a video, that is left alone.
+    func bringBackAirPods(automatic: Bool) {
+        guard settings.tracking != .glasses, !reclaimingAirPods, let address = settings.usualAirPods,
+              HeadphoneCatalog.currentOutputAddress() != address.uppercased() else { return }
+        if automatic, !settings.flag("reclaimAirPods") { return }
+        reclaimingAirPods = true
+        renderer?.setAirPodsConnecting(true)
+        Telemetry.shared.event("bringing airpods back", details: automatic ? "glasses put on" : "menu", time: CACurrentMediaTime())
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let ok = HeadphoneCatalog.use(address: address)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.reclaimingAirPods = false
+                self.renderer?.setAirPodsConnecting(false)
+                Telemetry.shared.event(ok ? "airpods back on this mac" : "airpods not reachable", time: CACurrentMediaTime())
+                guard ok else { return } // the glasses then say "Glasses tracking only" with the reason
+                self.seedAirPodsCalibration()
+                self.headphones.stop() // CoreMotion follows the new route after a restart
+                self.headphones.start()
+            }
+        }
+    }
+
+    private var reclaimingAirPods = false
 
     @objc func toggleDeveloper() {
         setting({ settings.developer.toggle() }, settings.developer ? "Developer mode off" : "Developer mode on")

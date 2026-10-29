@@ -139,23 +139,23 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
         start()
     }
 
-    /// Why no motion is arriving, for the message card (nil while it arrives).
-    func problem(outputIsBluetooth: Bool) -> (title: String, message: String)? {
+    /// Why the AirPods aren't being used, in one calm sentence (nil while motion arrives).
+    /// `usual` is the pair last used with this Mac.
+    func problem(usual: String?) -> String? {
         guard dataAge > 1 else { return nil }
         switch CMHeadphoneMotionManager.authorizationStatus() {
-        case .denied, .restricted:
-            return ("Motion access is off", "Allow RayNeoPin in System Settings › Privacy & Security › Motion & Fitness.")
-        case .notDetermined:
-            return ("Allow motion access", "macOS asks the first time the AirPods send motion. Keep them in your ears.")
+        case .denied, .restricted: return "Motion & Fitness access is off for RayNeoPin in System Settings."
+        case .notDetermined: return "Put your AirPods in to allow motion access."
         default: break
         }
-        if !outputIsBluetooth {
-            return ("AirPods aren't the sound output", "Choose them in Control Center › Sound. Head tracking follows the sound output.")
+        let output = HeadphoneCatalog.currentOutputAddress()
+        if let usual, output != usual.uppercased() {
+            return HeadphoneCatalog.isConnected(usual) ? "Your AirPods aren't this Mac's sound output."
+                                                       : "Your AirPods are in use on another device."
         }
-        if !isAvailable {
-            return ("These headphones have no head tracking", "Use AirPods Pro, AirPods 3 or 4, AirPods Max or Beats Fit Pro.")
-        }
-        return ("Waiting for AirPods motion", "Keep both AirPods in your ears. Tracking with the glasses meanwhile.")
+        if output == nil { return "No AirPods are connected to this Mac." }
+        if !isAvailable { return "These headphones don't support head tracking." }
+        return "Put both AirPods in your ears to use them."
     }
 }
 
@@ -648,14 +648,23 @@ enum HeadphoneCatalog {
         return address(fromUID: uid)
     }
 
+    /// Connected to this Mac over Bluetooth (not necessarily the sound output).
+    static func isConnected(_ address: String) -> Bool {
+        IOBluetoothDevice(addressString: address)?.isConnected() == true
+    }
+
     /// Connects (if needed) and makes `device` the sound output, which is what CoreMotion follows.
-    static func use(_ device: HeadphoneDevice) -> Bool {
-        if outputDevice(for: device.address) == nil {
-            guard let bt = IOBluetoothDevice(addressString: device.address) else { return false }
+    /// Connecting takes the AirPods back from another device (an iPhone), like choosing them in
+    /// Control Center.
+    static func use(_ device: HeadphoneDevice) -> Bool { use(address: device.address) }
+
+    static func use(address: String) -> Bool {
+        if outputDevice(for: address) == nil {
+            guard let bt = IOBluetoothDevice(addressString: address) else { return false }
             if !bt.isConnected() { _ = bt.openConnection() }
         }
         for _ in 0..<40 { // the audio device shows up a moment after the Bluetooth link
-            if let id = outputDevice(for: device.address) { return setDefaultOutput(id) }
+            if let id = outputDevice(for: address) { return setDefaultOutput(id) }
             Thread.sleep(forTimeInterval: 0.25)
         }
         return false

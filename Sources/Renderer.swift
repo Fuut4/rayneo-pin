@@ -726,13 +726,20 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         lock.lock(); toast = (state, Date().addingTimeInterval(seconds)); lock.unlock()
     }
 
-    private var airPodsProblem: (title: String, message: String)?
+    private var airPodsProblem: String?
+    private var airPodsConnecting = false
+    private var airPodsAnnounced = false // render thread: "glasses tracking only" was shown
     private var airPodsMissingSince: Double? // render thread
     private var airPodsCheckedAt = 0.0
 
     /// Why the AirPods send no motion (from the app's checks), shown instead of a generic note.
-    func setAirPodsProblem(_ p: (title: String, message: String)?) {
+    func setAirPodsProblem(_ p: String?) {
         lock.lock(); airPodsProblem = p; lock.unlock()
+    }
+
+    /// While the AirPods are being brought back to this Mac (glasses just put on).
+    func setAirPodsConnecting(_ on: Bool) {
+        lock.lock(); airPodsConnecting = on; lock.unlock()
     }
 
     func hideCard() {
@@ -927,6 +934,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
         } else {
             lock.lock()
             let problem = airPodsProblem
+            let connecting = airPodsConnecting
             lock.unlock()
             // No AirPods: a short alert from the bottom once they've been missing for 3 s (they take a
             // moment to start after the glasses are put on), then it eases out after 4 s.
@@ -937,9 +945,22 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             airPodsCheckedAt = now
             if !missing { airPodsMissingSince = nil } else if airPodsMissingSince == nil { airPodsMissingSince = now }
             let missingFor = airPodsMissingSince.map { now - $0 } ?? 0
-            airPodsCard = missingFor < 3 || missingFor > 7 ? nil
-                : OverlayState(tone: .warning, icon: "airpodspro", title: problem?.title ?? "No AirPods motion",
-                               message: "Continuing with the glasses only.")
+            if connecting, missing {
+                airPodsCard = OverlayState(tone: .progress, icon: "airpodspro", title: "Connecting your AirPods",
+                                           message: "Bringing them back to this Mac.")
+                airPodsMissingSince = now
+            } else if missingFor >= 3, missingFor <= 7 {
+                airPodsCard = OverlayState(tone: .info, icon: "eyeglasses", title: "Glasses tracking only",
+                                           message: problem ?? "Your AirPods aren't sending head motion.")
+                airPodsAnnounced = true
+            } else {
+                airPodsCard = nil
+            }
+            // Back after an announcement: say so once.
+            if airpods != nil, airPodsAnnounced {
+                airPodsAnnounced = false
+                show("AirPods head tracking resumed", seconds: 2.5, icon: "airpodspro", tone: .success)
+            }
         }
 
         var pose: simd_quatd?

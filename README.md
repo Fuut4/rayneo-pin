@@ -88,6 +88,8 @@ The AirPods calibrate with a short guided movement, shown in the glasses on a ba
 
 Each side only fills as far as the glasses and the AirPods agree you turned, so a glitch or a bud adjusting in your ear can't fill it. Each finished side plays a sound: left and right come from that ear, up is higher, down is lower. A chime marks the end. The result is saved per pair and per earbud; **Recalibrate AirPods** starts over.
 
+**When the AirPods aren't available** (your iPhone took them, they're in their case, or they aren't the sound output), the glasses show a short notice, *Glasses tracking only*, with the reason, and tracking continues with the glasses. When the AirPods come back, a notice says so. Putting the glasses on brings your usual AirPods back to this Mac, as choosing them in Control Center would; this never happens mid-session, so a call on the iPhone isn't interrupted. Turn it off under Settings › Head Tracking, or do it by hand with **Bring AirPods Back to This Mac**.
+
 ## Controls
 
 | Hotkey | Action |
