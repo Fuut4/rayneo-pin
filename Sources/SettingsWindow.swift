@@ -635,6 +635,7 @@ enum SettingsSnapshot {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let delegate = AppDelegate()
         for page in SettingsPage.allCases {
+            FileHandle.standardError.write(Data("snapshot \(page.rawValue)\n".utf8))
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 640),
                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
             w.titlebarAppearsTransparent = true
@@ -648,6 +649,7 @@ enum SettingsSnapshot {
             w.orderOut(nil)
         }
         // The permissions window.
+        FileHandle.standardError.write(Data("snapshot permissions window\n".utf8))
         do {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 420),
                              styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
