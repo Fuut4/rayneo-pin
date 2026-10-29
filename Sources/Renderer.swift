@@ -856,6 +856,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             // off (the glasses moved, the AirPods didn't), not the AirPods moving in the ears. Undo it.
             if frameStart - lastIngest > 1, let undo = reseatUndo, lastIngest - undo.time < 5 {
                 calibration = undo.calibration
+                calibration.forgetAgreement() // or the same votes call it a reseat again at once
                 Telemetry.shared.event("airpods reseat undone (glasses were being taken off)", time: frameStart)
             }
             if frameStart - lastIngest > 1 { reseatUndo = nil }

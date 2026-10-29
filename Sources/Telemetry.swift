@@ -241,8 +241,10 @@ final class TelemetryUploader {
         for (i, name) in header.enumerated() where i < fields.count && table.columns.contains(name) {
             var f = fields[i]
             if f.hasPrefix("\""), f.hasSuffix("\""), f.count >= 2 { f = String(f.dropFirst().dropLast()) }
-            if f.isEmpty { continue }
-            if table.text.contains(name) { row[name] = f } else if let d = Double(f), d.isFinite { row[name] = d }
+            // Every row needs every column: the database refuses a batch whose rows differ, and a
+            // refused batch is dropped. Leaving out empty values lost whole batches of events.
+            if table.text.contains(name) { row[name] = f.isEmpty ? NSNull() : f }
+            else if let d = Double(f), d.isFinite { row[name] = d } else { row[name] = NSNull() }
         }
         pending[stream, default: []].append(row)
         // A long offline stretch must not grow without bound: keep the newest.

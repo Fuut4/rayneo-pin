@@ -1279,12 +1279,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Takes the usual AirPods back from another device (an iPhone) so their head tracking returns.
     /// Only when asked: recentering, putting the glasses on (which recenters), or the menu. Never on
-    /// its own in the middle of a session: if you watch something on the iPhone with them, they stay
-    /// there and tracking continues with the glasses.
+    /// its own in the middle of a session: if you listen or watch on the iPhone, they stay there and
+    /// tracking continues with the glasses.
     ///
-    /// Being listed as the Mac's sound output isn't enough: with automatic switching the iPhone can
-    /// still hold them. They go to the device that starts playing, so this makes them the output
-    /// and plays a short sound through them.
+    /// First the gentle way (make them this Mac's output). If no motion arrives, the iPhone still
+    /// holds them, often while the Mac lists them as connected: then a fresh connection request,
+    /// as choosing them in Control Center does. A short sound on the AirPods says they're back.
     func bringBackAirPods(automatic: Bool) {
         guard settings.tracking != .glasses, !reclaimingAirPods, let address = settings.usualAirPods,
               headphones.dataAge > 1.5 else { return } // already sending motion
@@ -1293,22 +1293,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.setAirPodsConnecting(true)
         Telemetry.shared.event("bringing airpods back", details: automatic ? "recenter" : "menu", time: CACurrentMediaTime())
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let ok = HeadphoneCatalog.use(address: address)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if ok { NSSound(named: "Tink")?.play() } // on the AirPods: playing is what hands them over
-                self.headphones.stop() // CoreMotion follows a new route only after a restart
-                self.headphones.start()
-                // Give the motion a few seconds to start, then report.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
-                    self.reclaimingAirPods = false
-                    self.renderer?.setAirPodsConnecting(false)
-                    let moving = self.headphones.dataAge < 2
-                    Telemetry.shared.event(moving ? "airpods back on this mac" : ok ? "airpods connected, no motion" : "airpods not reachable",
-                                           time: CACurrentMediaTime())
-                    if moving { self.seedAirPodsCalibration() }
-                }
+            guard let self else { return }
+            var how = "output"
+            var ok = HeadphoneCatalog.use(address: address)
+            self.restartAirPodsMotion()
+            Thread.sleep(forTimeInterval: 2.5)
+            if self.headphones.dataAge > 1.5 {
+                how = "reconnected"
+                ok = HeadphoneCatalog.takeOver(address: address)
+                self.restartAirPodsMotion()
+                Thread.sleep(forTimeInterval: 3)
             }
+            let moving = self.headphones.dataAge < 1.5
+            DispatchQueue.main.async {
+                self.reclaimingAirPods = false
+                self.renderer?.setAirPodsConnecting(false)
+                if moving { NSSound(named: "Tink")?.play() } // heard on the AirPods: they're back
+                Telemetry.shared.event(moving ? "airpods back on this mac" : ok ? "airpods connected, no motion" : "airpods not reachable",
+                                       details: how, time: CACurrentMediaTime())
+                if moving { self.seedAirPodsCalibration() }
+            }
+        }
+    }
+
+    /// CoreMotion follows a new route only after a restart (call off the main thread).
+    private func restartAirPodsMotion() {
+        DispatchQueue.main.sync {
+            headphones.stop()
+            headphones.start()
         }
     }
 

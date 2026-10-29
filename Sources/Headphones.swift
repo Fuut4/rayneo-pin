@@ -335,6 +335,9 @@ struct AirPodsCalibration {
     /// Forget only where the AirPods' world is (after a jump, or to re-align).
     mutating func realign() { wStale = true }
 
+    /// Forget the recent agree/disagree votes (e.g. the glasses were just taken off and put on).
+    mutating func forgetAgreement() { recentAgreement.removeAll() }
+
     func bodyToWorld(_ s: Headphones.Sample) -> simd_quatd { inverted ? s.q.inverse : s.q }
 
     /// AirPods sample as the glasses' orientation (nil until calibrated).
@@ -671,6 +674,20 @@ enum HeadphoneCatalog {
     /// Connecting takes the AirPods back from another device (an iPhone), like choosing them in
     /// Control Center.
     static func use(_ device: HeadphoneDevice) -> Bool { use(address: device.address) }
+
+    /// Takes the AirPods for this Mac the way choosing them in Control Center does: a fresh
+    /// connection request (call off the main thread). While another device plays through them, the
+    /// Mac can still list them as connected and as its output yet hold no audio, and playing a sound
+    /// doesn't move them; dropping and reopening the link does.
+    static func takeOver(address: String) -> Bool {
+        guard let bt = IOBluetoothDevice(addressString: address) else { return false }
+        if bt.isConnected() {
+            bt.closeConnection()
+            Thread.sleep(forTimeInterval: 1)
+        }
+        _ = bt.openConnection()
+        return use(address: address)
+    }
 
     static func use(address: String) -> Bool {
         if outputDevice(for: address) == nil {
