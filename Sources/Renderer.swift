@@ -727,6 +727,8 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
     }
 
     private var airPodsProblem: (title: String, message: String)?
+    private var airPodsMissingSince: Double? // render thread
+    private var airPodsCheckedAt = 0.0
 
     /// Why the AirPods send no motion (from the app's checks), shown instead of a generic note.
     func setAirPodsProblem(_ p: (title: String, message: String)?) {
@@ -926,9 +928,18 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
             lock.lock()
             let problem = airPodsProblem
             lock.unlock()
-            airPodsCard = p.tracking == .glasses || airpods != nil || airPodsWasDisturbed ? nil
-                : OverlayState(tone: .warning, icon: "airpodspro", title: problem?.title ?? "Waiting for AirPods motion",
-                               message: problem?.message ?? "Keep both AirPods in your ears. Tracking with the glasses meanwhile.")
+            // No AirPods: a short alert from the bottom once they've been missing for 3 s (they take a
+            // moment to start after the glasses are put on), then it eases out after 4 s.
+            let now = CACurrentMediaTime()
+            let missing = p.tracking != .glasses && airpods == nil && !airPodsWasDisturbed
+            // Back from a rest (glasses put on again): announce a missing pair again.
+            if now - airPodsCheckedAt > 1 { airPodsMissingSince = nil }
+            airPodsCheckedAt = now
+            if !missing { airPodsMissingSince = nil } else if airPodsMissingSince == nil { airPodsMissingSince = now }
+            let missingFor = airPodsMissingSince.map { now - $0 } ?? 0
+            airPodsCard = missingFor < 3 || missingFor > 7 ? nil
+                : OverlayState(tone: .warning, icon: "airpodspro", title: problem?.title ?? "No AirPods motion",
+                               message: "Continuing with the glasses only.")
         }
 
         var pose: simd_quatd?
@@ -1389,7 +1400,7 @@ final class Renderer: NSObject, CAMetalDisplayLinkDelegate {
                             devFPS, devDrawFPS, devCPU * 1000, pacing == .metalLink ? "metal link" : "classic link", p.tracking.title))
         lines.append("")
         lines.append("GLASSES IMU   " + (s.connected ? String(format: "%3.0f Hz · %@ · %.1f °C · proximity %.0f · light? %.1f%@", raw.rate, state, raw.temperature,
-                                                                  raw.proximity, raw.light, raw.asleep ? " · ASLEEP (not worn)" : "") : "not connected"))
+                                                                  raw.proximity, raw.light, raw.asleep ? " · ASLEEP" : !raw.worn ? " · NOT WORN" : "") : "not connected"))
         lines.append("  gyro °/s    " + v(raw.gyro) + "   |ω| " + String(format: "%.2f", simd_length(s.omega) * 180 / .pi))
         lines.append("  bias °/s    " + v(raw.bias) + "   still " + String(format: "%.1f s", raw.stillTime))
         lines.append("  accel m/s²  " + v(raw.acc, 1) + "   |a| " + String(format: "%.2f", simd_length(raw.acc))

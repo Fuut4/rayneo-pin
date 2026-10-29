@@ -304,6 +304,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.renderer?.setResting(resting)
                 if self.settings.tracking != .glasses { if resting { self.headphones.stop() } else { self.headphones.start() } }
                 Telemetry.shared.event(resting ? "resting" : "resumed", time: CACurrentMediaTime())
+                // Taken off (not unplugged): say so on the Mac, briefly.
+                if resting, self.imu.snapshot().connected, Displays.glasses() != nil, self.calibrationTimer == nil {
+                    self.macCard.show(OverlayState(tone: .info, icon: "eyeglasses", title: "Glasses taken off",
+                                                   message: "Paused until you put them back on, to save battery."), hideAfter: 3)
+                }
             }
             guard let glasses = Displays.glasses() else { return }
             self.renderer?.keepOn(glasses)

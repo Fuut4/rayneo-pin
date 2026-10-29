@@ -178,7 +178,7 @@ Sleep and wake arrive as ack frames (`0xC8`) with `0x41` / `0x42` at byte 8. The
 
 ### Rest
 
-When the glasses report they're no longer worn, RayNeoPin rests: no capture, no frames, no AirPods motion (sparing their battery), no caret polling. The glasses' IMU keeps streaming, since it's cheap, refines the gyro bias while they lie still, and carries the wake-up notice. The displays stay as they are, so no window moves. Putting the glasses on resumes everything within a second.
+When the glasses come off your head (their proximity sensor reads about 1200 off the head and 65535 on it), or are unplugged, RayNeoPin rests: no capture, no frames, no AirPods motion (sparing their battery), no caret polling. The glasses' IMU keeps streaming, since it's cheap, refines the gyro bias while they lie still, and carries the proximity readings that wake it up. The displays stay as they are, so no window moves. A card at the top of the Mac's screen says so. Putting the glasses on resumes everything within a second; if the AirPods aren't available then, a short alert in the glasses says it continues with the glasses only.
 
 ### Rendering
 

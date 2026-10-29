@@ -196,7 +196,21 @@ final class MacCard {
         guard let panel else { return }
         if let screen = Displays.builtin().flatMap(Displays.screen) ?? NSScreen.main {
             let f = screen.visibleFrame
-            panel.setFrameTopLeftPoint(NSPoint(x: f.midX - 220, y: f.maxY - 12))
+            let top = NSPoint(x: f.midX - 220, y: f.maxY - 12)
+            if panel.isVisible, panel.alphaValue > 0 {
+                panel.setFrameTopLeftPoint(top)
+            } else {
+                // Slides down from the menu bar and fades in, like a notification.
+                panel.alphaValue = 0
+                panel.setFrameTopLeftPoint(NSPoint(x: top.x, y: top.y + 16))
+                panel.orderFrontRegardless()
+                NSAnimationContext.runAnimationGroup { c in
+                    c.duration = 0.25
+                    c.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    panel.animator().alphaValue = 1
+                    panel.animator().setFrameTopLeftPoint(top)
+                }
+            }
         }
         panel.orderFrontRegardless()
         hide?.cancel()
@@ -209,7 +223,14 @@ final class MacCard {
 
     func dismiss() {
         hide?.cancel()
-        panel?.orderOut(nil)
+        guard let panel, panel.isVisible else { return }
+        NSAnimationContext.runAnimationGroup({ c in
+            c.duration = 0.3
+            c.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak panel] in
+            if panel?.alphaValue == 0 { panel?.orderOut(nil) }
+        })
     }
 }
 

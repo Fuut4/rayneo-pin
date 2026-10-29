@@ -469,7 +469,8 @@ final class IMU {
         var stillTime = 0.0
         var proximity = 0.0 // proximity sensor reading
         var light = 0.0 // float at offset 48: unknown, possibly the ambient light sensor
-        var asleep = false // display off because the glasses aren't worn
+        var asleep = false // display off because the glasses aren't worn (firmware notice; not every model sends it)
+        var worn = true // from the proximity sensor
         var scale = SIMD3<Double>(repeating: 1)
         var accelRejected = false
         var temperatureSlope: SIMD3<Double>?
@@ -571,9 +572,27 @@ final class IMU {
         return r
     }
 
+    /// Not worn: by the firmware's sleep notice or the proximity sensor.
     var isAsleep: Bool {
         lock.lock(); defer { lock.unlock() }
-        return raw.asleep
+        return raw.asleep || !raw.worn
+    }
+
+    private var proximityChange: Double?
+
+    /// The proximity sensor (Air 4 Pro) reads 65535 on a head and about 1100–1250 off it. Worn after
+    /// 0.3 s above 20000, off after 1.5 s below 5000, so a glance away or a bump doesn't count.
+    /// A reading of 0 (sensor disabled, or a model without it) changes nothing. Called under `lock`.
+    private func updateWorn(_ p: Double, _ t: Double) {
+        let wantWorn: Bool
+        if p > 20000 { wantWorn = true } else if p > 300, p < 5000 { wantWorn = false } else { proximityChange = nil; return }
+        guard wantWorn != raw.worn else { proximityChange = nil; return }
+        let since = proximityChange ?? t
+        proximityChange = since
+        if t - since >= (wantWorn ? 0.3 : 1.5) {
+            raw.worn = wantWorn
+            proximityChange = nil
+        }
     }
 
     var bias: SIMD3<Double> {
@@ -703,6 +722,7 @@ final class IMU {
             self.raw.gyro = gyro
             self.raw.temperature = f(28)
             self.raw.proximity = f(44)
+            updateWorn(f(44), hostTime)
             self.raw.light = f(48)
             if now.timeIntervalSince(rateStart) >= 1 {
                 self.raw.rate = Double(rateCount) / now.timeIntervalSince(rateStart)
