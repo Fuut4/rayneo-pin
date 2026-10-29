@@ -35,6 +35,7 @@ jobs:
         run: |
           swiftc -swift-version 5 -target arm64-apple-macosx14.0 -import-objc-header Sources/CGVirtualDisplay.h \
             $(ls Sources/*.swift | grep -v main.swift) tests/main.swift -o logic-tests
+          set +e
           ./logic-tests > results.txt 2>&1; status=$?
           cat results.txt
           echo "exit status $status" >> results.txt
