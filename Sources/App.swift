@@ -1279,12 +1279,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Takes the usual AirPods back from another device (an iPhone) so their head tracking returns.
     /// Only when asked: recentering, putting the glasses on (which recenters), or the menu. Never on
-    /// its own in the middle of a session: if you listen or watch on the iPhone, they stay there and
-    /// tracking continues with the glasses.
+    /// its own: if you listen or watch on the iPhone, they stay there and tracking continues with
+    /// the glasses.
     ///
-    /// First the gentle way (make them this Mac's output). If no motion arrives, the iPhone still
-    /// holds them, often while the Mac lists them as connected: then a fresh connection request,
-    /// as choosing them in Control Center does. A short sound on the AirPods says they're back.
+    /// One action, no retries: make them this Mac's output, then play a short chime as media
+    /// (AirPodsHandoff), the signal macOS's own automatic switching acts on. When their motion
+    /// returns, the glasses say "AirPods head tracking resumed".
     func bringBackAirPods(automatic: Bool) {
         guard settings.tracking != .glasses, !reclaimingAirPods, let address = settings.usualAirPods,
               headphones.dataAge > 1.5 else { return } // already sending motion
@@ -1293,37 +1293,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         renderer?.setAirPodsConnecting(true)
         Telemetry.shared.event("bringing airpods back", details: automatic ? "recenter" : "menu", time: CACurrentMediaTime())
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self else { return }
-            var how = "output"
-            var ok = HeadphoneCatalog.use(address: address)
-            self.restartAirPodsMotion()
-            Thread.sleep(forTimeInterval: 2.5)
-            if self.headphones.dataAge > 1.5 {
-                how = "reconnected"
-                ok = HeadphoneCatalog.takeOver(address: address)
-                self.restartAirPodsMotion()
-                Thread.sleep(forTimeInterval: 3)
-            }
-            let moving = self.headphones.dataAge < 1.5
+            let isOutput = HeadphoneCatalog.use(address: address) // public CoreAudio: this Mac's output
             DispatchQueue.main.async {
-                self.reclaimingAirPods = false
-                self.renderer?.setAirPodsConnecting(false)
-                if moving { NSSound(named: "Tink")?.play() } // heard on the AirPods: they're back
-                Telemetry.shared.event(moving ? "airpods back on this mac" : ok ? "airpods connected, no motion" : "airpods not reachable",
-                                       details: how, time: CACurrentMediaTime())
-                if moving { self.seedAirPodsCalibration() }
+                guard let self else { return }
+                Telemetry.shared.event("airpods handoff chime", details: isOutput ? "output set" : "not an output of this mac", time: CACurrentMediaTime())
+                self.airPodsHandoff.request {
+                    self.reclaimingAirPods = false
+                    self.renderer?.setAirPodsConnecting(false)
+                    self.headphones.stop() // CoreMotion follows a new route only after a restart
+                    self.headphones.start()
+                }
             }
         }
     }
 
-    /// CoreMotion follows a new route only after a restart (call off the main thread).
-    private func restartAirPodsMotion() {
-        DispatchQueue.main.sync {
-            headphones.stop()
-            headphones.start()
-        }
-    }
-
+    private let airPodsHandoff = AirPodsHandoff()
     private var reclaimingAirPods = false
 
     @objc func toggleDeveloper() {

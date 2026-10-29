@@ -7,9 +7,11 @@
 // headings should differ by a constant; when the glasses' gyro drifts we slowly undo it), or as
 // the only tracker.
 
+import AVFoundation
 import CoreAudio
 import CoreMotion
 import IOBluetooth
+import MediaPlayer
 import QuartzCore
 import simd
 
@@ -158,6 +160,58 @@ final class Headphones: NSObject, CMHeadphoneMotionManagerDelegate {
         // Listed as the output yet silent: usually another device holds them (automatic switching),
         // or they're out of the ears.
         return "Your AirPods may be connected to another device, or out of your ears."
+    }
+}
+
+/// Asks macOS to move the AirPods to this Mac, the way Apple documents it.
+///
+/// Which device gets the AirPods is decided by macOS's own automatic switching (the
+/// `audioaccessoryd` daemon), from "Now Playing" registration and microphone activity (WWDC23,
+/// "Enhance your app's audio experience with AirPods"). Notification sounds don't count: Apple
+/// asks apps to play chimes through Audio Services precisely so they never move the AirPods,
+/// which is why a plain system sound did nothing. Control Center's own switch, and the AirPods'
+/// "owns connection" / smart-routing messages (documented by LibrePods), are private and not
+/// open to other apps.
+///
+/// So this plays a short chime as media, registered as Now Playing for exactly its length, on
+/// this Mac's output: the same signal as pressing play on the Mac, which hands the AirPods over.
+/// Once, only when asked; Now Playing is released as soon as the chime ends.
+final class AirPodsHandoff: NSObject, AVAudioPlayerDelegate {
+    private var player: AVAudioPlayer?
+    private var finished: (() -> Void)?
+
+    func request(finished: @escaping () -> Void) {
+        guard player == nil,
+              let p = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: "/System/Library/Sounds/Hero.aiff")) else { finished(); return }
+        self.finished = finished
+        p.delegate = self
+        let commands = MPRemoteCommandCenter.shared() // Now Playing needs a command to answer to
+        commands.playCommand.addTarget { _ in .success }
+        commands.pauseCommand.addTarget { [weak self] _ in self?.release(); return .success }
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = [MPMediaItemPropertyTitle: "RayNeoPin",
+                                 MPMediaItemPropertyArtist: "Connecting your AirPods",
+                                 MPMediaItemPropertyPlaybackDuration: p.duration,
+                                 MPNowPlayingInfoPropertyElapsedPlaybackTime: 0,
+                                 MPNowPlayingInfoPropertyPlaybackRate: 1]
+        center.playbackState = .playing
+        player = p
+        p.play()
+    }
+
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { release() }
+
+    private func release() {
+        player?.stop()
+        player = nil
+        let center = MPNowPlayingInfoCenter.default()
+        center.playbackState = .stopped
+        center.nowPlayingInfo = nil
+        let commands = MPRemoteCommandCenter.shared()
+        commands.playCommand.removeTarget(nil)
+        commands.pauseCommand.removeTarget(nil)
+        finished?()
+        finished = nil
     }
 }
 
@@ -674,20 +728,6 @@ enum HeadphoneCatalog {
     /// Connecting takes the AirPods back from another device (an iPhone), like choosing them in
     /// Control Center.
     static func use(_ device: HeadphoneDevice) -> Bool { use(address: device.address) }
-
-    /// Takes the AirPods for this Mac the way choosing them in Control Center does: a fresh
-    /// connection request (call off the main thread). While another device plays through them, the
-    /// Mac can still list them as connected and as its output yet hold no audio, and playing a sound
-    /// doesn't move them; dropping and reopening the link does.
-    static func takeOver(address: String) -> Bool {
-        guard let bt = IOBluetoothDevice(addressString: address) else { return false }
-        if bt.isConnected() {
-            bt.closeConnection()
-            Thread.sleep(forTimeInterval: 1)
-        }
-        _ = bt.openConnection()
-        return use(address: address)
-    }
 
     static func use(address: String) -> Bool {
         if outputDevice(for: address) == nil {
