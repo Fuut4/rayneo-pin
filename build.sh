@@ -73,9 +73,22 @@ CFG
   return $ok
 }
 
+# codesign waits on macOS's "allow codesign to use this key" dialog the first time; if nobody
+# answers it (no one at the Mac, or a headless CI runner), give up after 2 minutes, not hang.
+sign_with() {
+  codesign --force --sign "$1" --identifier "$BUNDLE_ID" "$APP" 2>/dev/null &
+  local pid=$!
+  ( sleep 120; kill $pid 2>/dev/null ) &
+  local watchdog=$!
+  wait $pid
+  local ok=$?
+  kill $watchdog 2>/dev/null
+  return $ok
+}
+
 SIGN_ID=${SIGN_ID:-$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}
-if [[ -z "$SIGN_ID" ]] && local_identity; then SIGN_ID=$LOCAL_ID; fi
-if [[ -n "$SIGN_ID" ]] && codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP" 2>/dev/null; then
+if [[ -z "$SIGN_ID" && -z "${CI:-}" ]] && local_identity; then SIGN_ID=$LOCAL_ID; fi
+if [[ -n "$SIGN_ID" ]] && sign_with "$SIGN_ID"; then
   echo "Signed with: $SIGN_ID"
 else
   codesign --force --sign - --identifier "$BUNDLE_ID" "$APP"
