@@ -105,6 +105,8 @@ enum Permission: String, CaseIterable, Identifiable {
             default: return .notGranted
             }
         case .bluetooth:
+            // macOS aborts a process that asks without the usage description (a bare binary, CI).
+            guard Bundle.main.object(forInfoDictionaryKey: "NSBluetoothAlwaysUsageDescription") != nil else { return .notGranted }
             switch CBManager.authorization {
             case .allowedAlways: return .granted
             case .denied, .restricted: return .denied
