@@ -12,6 +12,41 @@
 # to /Applications and relaunches it. Pass --force to rebuild even when already up to date.
 set -euo pipefail
 
+fail() { echo "✗ $1" >&2; exit 1; }
+
+# Apple's Command Line Tools: git and the Swift compiler, working (license accepted, not broken
+# by a macOS update).
+tools_ok() { xcrun --find git >/dev/null 2>&1 && xcrun swiftc --version >/dev/null 2>&1; }
+
+# Installs the Command Line Tools if they're missing, through Apple's own installer window, and
+# waits for it. From the app's updater (no Terminal to explain things in), it only reports.
+ensure_tools() {
+  tools_ok && return 0
+  local why=$(xcrun swiftc --version 2>&1 || true)
+  if [[ "$why" == *license* ]]; then
+    fail "Accept Xcode's license first: sudo xcodebuild -license accept"
+  fi
+  [[ -n "${RAYNEOPIN_FROM_APP:-}" ]] && fail "Apple's Command Line Tools are missing. Run the install command in Terminal once."
+  if xcode-select -p >/dev/null 2>&1; then
+    # Installed but unusable, usually after a macOS update.
+    fail "Apple's Command Line Tools look damaged. Reinstall them:
+  sudo rm -rf /Library/Developer/CommandLineTools && xcode-select --install
+then run this command again."
+  fi
+  echo "RayNeoPin is built on your Mac with Apple's Command Line Tools (free, a few minutes)."
+  echo "A macOS window will open: click Install and accept the license."
+  xcode-select --install >/dev/null 2>&1 || true
+  echo -n "Waiting for the installation to finish"
+  local waited=0
+  until tools_ok; do
+    sleep 5
+    waited=$((waited + 5))
+    echo -n "."
+    (( waited < 3600 )) || { echo; fail "The Command Line Tools didn't finish within an hour. Run this command again once they have."; }
+  done
+  echo " done."
+}
+
 # Everything runs inside main so zsh has read the whole script before the git
 # reset below rewrites this file (and so a truncated curl download runs nothing).
 main() {
@@ -22,10 +57,11 @@ main() {
   FORCE=0
   [[ "${1:-}" == "--force" ]] && FORCE=1
 
-  if ! xcode-select -p >/dev/null 2>&1; then
-    echo "Xcode Command Line Tools are required. Install them with: xcode-select --install"
-    exit 1
-  fi
+  # Everything that can be checked before downloading anything.
+  [[ "$(uname -m)" == arm64 ]] || fail "RayNeoPin needs an Apple Silicon Mac (M1 or later)."
+  local version=$(sw_vers -productVersion)
+  (( ${version%%.*} >= 14 )) || fail "RayNeoPin needs macOS 14 Sonoma or later (this Mac runs $version)."
+  ensure_tools
 
   # "==> step/total" lines are progress, shown by the app while it updates.
   echo "==> 1/4 Downloading the latest version…"
@@ -50,6 +86,7 @@ main() {
   fi
 
   echo "==> 2/4 Building $NEW ($OLD → $NEW), about a minute…"
+  # (build.sh signs it; see there for how the Screen Recording permission survives updates.)
   "$SRC/build.sh"
 
   # From the app's "Check for Updates…", the app restarts itself once the new copy is in place.

@@ -13,6 +13,12 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: Install and build scripts
+        run: |
+          zsh -n install.sh
+          zsh -n build.sh
+          ./build.sh
+          codesign -dvv RayNeoPin.app 2>&1 | grep -E "Authority|Signature|Identifier"
       - name: Compile
         run: |
           swiftc --version
