@@ -224,7 +224,9 @@ do {
     var q = simd_quatd.identity, t = 0.0, next = 0.0
     var readyAt: Double?, lostAt: Double?
     while t < 50 {
-        let w = t < 8 ? SIMD3(0.8 * sin(2 * t), 1.5 * sin(1.3 * t), 0.2 * sin(t)) : SIMD3<Double>(repeating: 0.001)
+        // Cosine rates: the head swings to both sides (left and right, up and down), as the guided
+        // calibration asks, then stays still.
+        let w = t < 10 ? SIMD3(0.8 * cos(2 * t), 1.5 * cos(1.3 * t), 0.2 * cos(t)) : SIMD3<Double>(repeating: 0.001)
         q = simd_normalize(q.extrapolated(w, 0.002))
         history.append(PoseSample(time: t, q: q, omega: w))
         if t >= next {
@@ -236,7 +238,8 @@ do {
         }
         t += 0.002
     }
-    check(readyAt != nil && lostAt == nil, "AirPods stay calibrated through 40 s of sitting still" + (lostAt.map { String(format: " (lost at %.0f s)", $0) } ?? ""))
+    check(readyAt != nil && lostAt == nil, "AirPods stay calibrated through 40 s of sitting still"
+          + (readyAt == nil ? " (never calibrated)" : lostAt.map { String(format: " (lost at %.0f s)", $0) } ?? ""))
 }
 
 // 8. Calibration hint follows the real direction: after turning left it must ask for the right.
